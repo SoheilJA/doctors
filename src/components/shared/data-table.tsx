@@ -150,7 +150,6 @@ export function DataTable<TData, TValue>({
         </div>
       </div>
     );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows.length, totalRows, currentPage, pageCount, currentPageSize]);
 
   return (

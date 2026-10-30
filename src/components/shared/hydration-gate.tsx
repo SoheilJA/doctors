@@ -27,7 +27,6 @@ export function useDemoLoading(delayMs?: number): boolean {
     const ms = delayMs ?? 350 + Math.random() * 250;
     const timer = setTimeout(() => setSimulated(false), ms);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return !hydrated || simulated;

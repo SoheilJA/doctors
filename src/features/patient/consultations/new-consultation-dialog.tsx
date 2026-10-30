@@ -5,7 +5,7 @@
  */
 
 import { useMemo } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { MessagesSquare, Phone, Send, Video } from "lucide-react";
@@ -78,8 +78,8 @@ export function NewConsultationDialog({ open, onOpenChange, doctors, onCreated }
     defaultValues: { doctorId: "", type: "text", subject: "", question: "" },
   });
 
-  const doctorId = form.watch("doctorId");
-  const type = form.watch("type");
+  const doctorId = useWatch({ control: form.control, name: "doctorId" });
+  const type = useWatch({ control: form.control, name: "type" });
   const doctor = useMemo(() => doctors.find((d) => d.id === doctorId), [doctors, doctorId]);
   const fee = doctor
     ? type === "text"

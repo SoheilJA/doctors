@@ -1,0 +1,681 @@
+     1→"use client";
+     2→
+     3→/**
+     4→ * /doctor — Doctor dashboard: KPIs, charts, today's program,
+     5→ * upcoming appointments and latest reviews (all seeded store data).
+     6→ */
+     7→
+     8→import { useMemo, useState } from "react";
+     9→import Link from "next/link";
+    10→import { useRouter } from "next/navigation";
+    11→import { motion } from "framer-motion";
+    12→import { toast } from "sonner";
+    13→import {
+    14→  Area,
+    15→  AreaChart,
+    16→  Bar,
+    17→  BarChart,
+    18→  CartesianGrid,
+    19→  Cell,
+    20→  Line,
+    21→  LineChart,
+    22→  Pie,
+    23→  PieChart,
+    24→  XAxis,
+    25→  YAxis,
+    26→} from "recharts";
+    27→import {
+    28→  CalendarCheck,
+    29→  CalendarDays,
+    30→  CalendarOff,
+    31→  CheckCircle2,
+    32→  ChevronLeft,
+    33→  ClipboardCheck,
+    34→  MessageSquareText,
+    35→  Star,
+    36→  Stethoscope,
+    37→  UserRound,
+    38→  UsersRound,
+    39→  Wallet,
+    40→  XCircle,
+    41→} from "lucide-react";
+    42→import {
+    43→  AlertDialog,
+    44→  AlertDialogAction,
+    45→  AlertDialogCancel,
+    46→  AlertDialogContent,
+    47→  AlertDialogDescription,
+    48→  AlertDialogFooter,
+    49→  AlertDialogHeader,
+    50→  AlertDialogTitle,
+    51→} from "@/components/ui/alert-dialog";
+    52→import { Badge } from "@/components/ui/badge";
+    53→import { Button } from "@/components/ui/button";
+    54→import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+    55→import { ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
+    56→import { ChartCard } from "@/components/shared/chart-card";
+    57→import { EmptyState } from "@/components/shared/empty-state";
+    58→import { PageHeader } from "@/components/shared/page-header";
+    59→import { RatingStars } from "@/components/shared/rating-stars";
+    60→import { StatCard } from "@/components/shared/stat-card";
+    61→import { StatusBadge } from "@/components/shared/status-badge";
+    62→import { useDemoLoading } from "@/components/shared/hydration-gate";
+    63→import { useAppStore } from "@/store/app-store";
+    64→import {
+    65→  APPOINTMENT_STATUS_LABELS,
+    66→  VISIT_TYPE_LABELS,
+    67→  type VisitType,
+    68→} from "@/lib/constants";
+    69→import { faNum, toFa, toman, tomanCompact } from "@/lib/fa";
+    70→import {
+    71→  eachDayISO,
+    72→  endOfWeekISO,
+    73→  faDate,
+    74→  faDateShort,
+    75→  faFromNow,
+    76→  faMonthLabel,
+    77→  faTime,
+    78→  jalaliMonthKey,
+    79→  startOfWeekISO,
+    80→  subDaysISO,
+    81→  subMonthsISO,
+    82→  todayISO,
+    83→  weekdayIndex,
+    84→  JALALI_WEEKDAYS_SHORT,
+    85→} from "@/lib/jalali";
+    86→import {
+    87→  appointmentPatientName,
+    88→  byDateTimeAsc,
+    89→  byTime,
+    90→  netFee,
+    91→  useDoctorPanel,
+    92→  VISIT_TYPE_ICONS,
+    93→} from "@/features/doctor/shared";
+    94→import type { Appointment } from "@/types";
+    95→
+    96→const HEAT_LADDER = [
+    97→  "bg-primary/8",
+    98→  "bg-primary/15",
+    99→  "bg-primary/25",
+   100→  "bg-primary/40",
+   101→  "bg-primary/55",
+   102→  "bg-primary/70",
+   103→  "bg-primary/90",
+   104→];
+   105→
+   106→const HEAT_HOURS = Array.from({ length: 14 }, (_, i) => i + 8); // 8..21
+   107→
+   108→export default function DoctorDashboardPage() {
+   109→  const loading = useDemoLoading();
+   110→  const router = useRouter();
+   111→  const { doctor, appointments, consultations, reviews, patientMap } = useDoctorPanel();
+   112→  const setAppointmentStatus = useAppStore((s) => s.setAppointmentStatus);
+   113→  const [cancelTarget, setCancelTarget] = useState<Appointment | null>(null);
+   114→
+   115→  const today = todayISO();
+   116→
+   117→  /* ------------------------------ stats ------------------------------ */
+   118→
+   119→  const stats = useMemo(() => {
+   120→    const todays = appointments.filter((a) => a.date === today).sort(byTime);
+   121→    const weekStart = startOfWeekISO(today);
+   122→    const weekEnd = endOfWeekISO(today);
+   123→    const thisWeek = appointments.filter(
+   124→      (a) => a.date >= weekStart && a.date <= weekEnd && a.status !== "cancelled" && a.status !== "no-show"
+   125→    );
+   126→    const monthKey = jalaliMonthKey(today);
+   127→    const monthCompleted = appointments.filter(
+   128→      (a) => a.status === "completed" && a.paymentStatus === "paid" && jalaliMonthKey(a.date) === monthKey
+   129→    );
+   130→    const monthNet = monthCompleted.reduce((s, a) => s + netFee(a), 0);
+   131→    const waiting = consultations.filter((c) => c.status === "waiting");
+   132→    const overdue = waiting.filter((c) => new Date(c.deadlineISO).getTime() < Date.now());
+   133→
+   134→    // patients whose first-ever visit with this doctor happened this month
+   135→    const firstVisit = new Map<string, string>();
+   136→    for (const a of [...appointments].sort(byDateTimeAsc)) {
+   137→      if (a.status === "cancelled") continue;
+   138→      if (!firstVisit.has(a.patientId)) firstVisit.set(a.patientId, a.date);
+   139→    }
+   140→    const newPatients = [...firstVisit.values()].filter((d) => jalaliMonthKey(d) === monthKey).length;
+   141→
+   142→    return {
+   143→      todays,
+   144→      confirmedToday: todays.filter((a) => a.status === "confirmed").length,
+   145→      thisWeek: thisWeek.length,
+   146→      monthNet,
+   147→      monthVisitCount: monthCompleted.length,
+   148→      waiting: waiting.length,
+   149→      overdue: overdue.length,
+   150→      newPatients,
+   151→    };
+   152→  }, [appointments, consultations, today]);
+   153→
+   154→  /* ------------------------------ charts ------------------------------ */
+   155→
+   156→  const visits30 = useMemo(() => {
+   157→    const byDay = new Map<string, number>();
+   158→    for (const a of appointments) {
+   159→      if (a.status !== "completed") continue;
+   160→      byDay.set(a.date, (byDay.get(a.date) ?? 0) + 1);
+   161→    }
+   162→    return eachDayISO(subDaysISO(today, 29), today).map((d) => ({
+   163→      label: faDateShort(d),
+   164→      visits: byDay.get(d) ?? 0,
+   165→    }));
+   166→  }, [appointments, today]);
+   167→
+   168→  const monthKeys = useMemo(
+   169→    () => [5, 4, 3, 2, 1, 0].map((i) => jalaliMonthKey(subMonthsISO(today, i))),
+   170→    [today]
+   171→  );
+   172→
+   173→  const income6 = useMemo(
+   174→    () =>
+   175→      monthKeys.map((key) => {
+   176→        const rows = appointments.filter(
+   177→          (a) => a.status === "completed" && a.paymentStatus === "paid" && jalaliMonthKey(a.date) === key
+   178→        );
+   179→        return {
+   180→          label: faMonthLabel(key),
+   181→          net: rows.reduce((s, a) => s + netFee(a), 0),
+   182→          gross: rows.reduce((s, a) => s + a.fee, 0),
+   183→        };
+   184→      }),
+   185→    [appointments, monthKeys]
+   186→  );
+   187→
+   188→  const visitTypeData = useMemo(() => {
+   189→    const keys: VisitType[] = ["in-person", "phone", "text", "video"];
+   190→    return keys
+   191→      .map((k) => ({
+   192→        key: k === "in-person" ? "inPerson" : k,
+   193→        label: VISIT_TYPE_LABELS[k],
+   194→        value: appointments.filter((a) => a.visitType === k && a.status !== "cancelled").length,
+   195→      }))
+   196→      .filter((d) => d.value > 0);
+   197→  }, [appointments]);
+   198→
+   199→  const heat = useMemo(() => {
+   200→    const counts = new Map<string, number>();
+   201→    let max = 1;
+   202→    for (const a of appointments) {
+   203→      if (a.status === "cancelled" || a.status === "no-show") continue;
+   204→      const key = `${weekdayIndex(a.date)}|${Number(a.time.split(":")[0])}`;
+   205→      const v = (counts.get(key) ?? 0) + 1;
+   206→      counts.set(key, v);
+   207→      max = Math.max(max, v);
+   208→    }
+   209→    return { counts, max };
+   210→  }, [appointments]);
+   211→
+   212→  const ratingTrend = useMemo(
+   213→    () =>
+   214→      monthKeys.map((key) => {
+   215→        const rows = reviews.filter((r) => jalaliMonthKey(r.createdAtISO) === key);
+   216→        return {
+   217→          label: faMonthLabel(key),
+   218→          avg: rows.length ? Math.round((rows.reduce((s, r) => s + r.rating, 0) / rows.length) * 10) / 10 : null,
+   219→        };
+   220→      }),
+   221→    [monthKeys, reviews]
+   222→  );
+   223→
+   224→  /* --------------------------- lists --------------------------- */
+   225→
+   226→  const upcoming = useMemo(
+   227→    () =>
+   228→      appointments
+   229→        .filter((a) => (a.status === "confirmed" || a.status === "pending") && a.date >= today)
+   230→        .sort(byDateTimeAsc)
+   231→        .slice(0, 5),
+   232→    [appointments, today]
+   233→  );
+   234→
+   235→  const latestReviews = useMemo(
+   236→    () => [...reviews].sort((a, b) => b.createdAtISO.localeCompare(a.createdAtISO)).slice(0, 3),
+   237→    [reviews]
+   238→  );
+   239→
+   240→  if (!doctor) {
+   241→    return <PageHeader title="داشبورد پزشک" description="در حال بارگذاری…" loading={loading} />;
+   242→  }
+   243→
+   244→  const quickAction = (a: Appointment, status: "confirmed" | "completed") => {
+   245→    setAppointmentStatus(a.id, status, doctor.name);
+   246→    toast.success(status === "confirmed" ? "نوبت تأیید شد" : "ویزیت انجام‌شده ثبت شد", {
+   247→      description: `نوبت ${toFa(a.code)}`,
+   248→    });
+   249→  };
+   250→
+   251→  const doCancel = () => {
+   252→    if (!cancelTarget) return;
+   253→    const wasPaid = cancelTarget.paymentStatus === "paid";
+   254→    setAppointmentStatus(cancelTarget.id, "cancelled", doctor.name);
+   255→    toast("نوبت لغو شد", { description: wasPaid ? "مبلغ پرداختی به بیمار بازگشت داده شد." : undefined });
+   256→    setCancelTarget(null);
+   257→  };
+   258→
+   259→  const visitsConfig = { visits: { label: "ویزیت", color: "var(--chart-1)" } } as const;
+   260→  const incomeConfig = { net: { label: "درآمد خالص", color: "var(--chart-2)" } } as const;
+   261→  const donutConfig = {
+   262→    inPerson: { label: "حضوری", color: "var(--chart-1)" },
+   263→    phone: { label: "تلفنی", color: "var(--chart-2)" },
+   264→    text: { label: "متنی", color: "var(--chart-3)" },
+   265→    video: { label: "ویدیویی", color: "var(--chart-5)" },
+   266→  } as const;
+   267→  const ratingConfig = { avg: { label: "میانگین امتیاز", color: "var(--chart-4)" } } as const;
+   268→
+   269→  return (
+   270→    <div className="space-y-6">
+   271→      <PageHeader
+   272→        title={`سلام ${doctor.name} 👋`}
+   273→        description={`امروز ${faDate(today)} — ${toFa(stats.todays.length)} نوبت در برنامه دارید.`}
+   274→        loading={loading}
+   275→        actions={
+   276→          <Button asChild variant="outline" size="sm">
+   277→            <Link href="/doctor/calendar">
+   278→              <CalendarDays className="size-4" aria-hidden />
+   279→              مشاهده تقویم
+   280→            </Link>
+   281→          </Button>
+   282→        }
+   283→      />
+   284→
+   285→      {/* KPI cards */}
+   286→      <section className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" aria-label="شاخص‌های کلیدی">
+   287→        <StatCard
+   288→          title="نوبت‌های امروز"
+   289→          value={faNum(stats.todays.length)}
+   290→          hint={`${toFa(stats.confirmedToday)} نوبت تأییدشده`}
+   291→          icon={CalendarCheck}
+   292→          tone="primary"
+   293→          loading={loading}
+   294→          onClick={() => router.push("/doctor/calendar")}
+   295→        />
+   296→        <StatCard
+   297→          title="ویزیت‌های این هفته"
+   298→          value={faNum(stats.thisWeek)}
+   299→          hint="شنبه تا جمعه جاری"
+   300→          icon={ClipboardCheck}
+   301→          tone="sky"
+   302→          loading={loading}
+   303→          onClick={() => router.push("/doctor/appointments")}
+   304→        />
+   305→        <StatCard
+   306→          title="درآمد ماه جاری"
+   307→          value={tomanCompact(stats.monthNet)}
+   308→          hint={`از ${toFa(stats.monthVisitCount)} ویزیت (پس از کسر کمیسیون)`}
+   309→          icon={Wallet}
+   310→          tone="emerald"
+   311→          loading={loading}
+   312→          onClick={() => router.push("/doctor/finance")}
+   313→        />
+   314→        <StatCard
+   315→          title="میانگین امتیاز"
+   316→          value={`${toFa(doctor.rating.toFixed(1))} از ۵`}
+   317→          hint={`بر اساس ${toFa(doctor.reviewCount)} نظر`}
+   318→          icon={Star}
+   319→          tone="amber"
+   320→          loading={loading}
+   321→          onClick={() => router.push("/doctor/reviews")}
+   322→        />
+   323→        <StatCard
+   324→          title="مشاوره‌های بی‌پاسخ"
+   325→          value={faNum(stats.waiting)}
+   326→          hint="در انتظار پاسخ شما"
+   327→          trend={stats.overdue > 0 ? { value: `${toFa(stats.overdue)} مورد مهلت گذشته`, positive: false } : undefined}
+   328→          icon={MessageSquareText}
+   329→          tone={stats.overdue > 0 ? "rose" : "violet"}
+   330→          loading={loading}
+   331→          onClick={() => router.push("/doctor/consultations")}
+   332→        />
+   333→        <StatCard
+   334→          title="بیماران جدید این ماه"
+   335→          value={faNum(stats.newPatients)}
+   336→          hint="اولین ویزیتشان با شما"
+   337→          icon={UsersRound}
+   338→          tone="violet"
+   339→          loading={loading}
+   340→          onClick={() => router.push("/doctor/patients")}
+   341→        />
+   342→      </section>
+   343→
+   344→      {/* charts row 1 */}
+   345→      <section className="grid gap-4 lg:grid-cols-3" aria-label="نمودارها">
+   346→        <ChartCard
+   347→          title="ویزیت‌های ۳۰ روز گذشته"
+   348→          description="تعداد ویزیت‌های انجام‌شده در هر روز"
+   349→          config={visitsConfig}
+   350→          loading={loading}
+   351→          className="lg:col-span-2"
+   352→        >
+   353→          <AreaChart data={visits30} margin={{ top: 8, left: 0, right: 8 }}>
+   354→            <defs>
+   355→              <linearGradient id="visitsFill" x1="0" y1="0" x2="0" y2="1">
+   356→                <stop offset="5%" stopColor="var(--color-visits)" stopOpacity={0.35} />
+   357→                <stop offset="95%" stopColor="var(--color-visits)" stopOpacity={0.03} />
+   358→              </linearGradient>
+   359→            </defs>
+   360→            <CartesianGrid vertical={false} strokeDasharray="3 3" />
+   361→            <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} interval={4} reversed />
+   362→            <YAxis tickLine={false} axisLine={false} width={28} allowDecimals={false} tickFormatter={(v) => faNum(Number(v))} />
+   363→            <ChartTooltip
+   364→              content={
+   365→                <ChartTooltipContent
+   366→                  labelFormatter={(l) => String(l)}
+   367→                  formatter={(v) => [`${faNum(Number(v))} ویزیت`, "انجام‌شده"]}
+   368→                />
+   369→              }
+   370→            />
+   371→            <Area dataKey="visits" type="monotone" stroke="var(--color-visits)" strokeWidth={2.2} fill="url(#visitsFill)" />
+   372→          </AreaChart>
+   373→        </ChartCard>
+   374→
+   375→        <ChartCard
+   376→          title="پرتقاضاترین ساعت‌ها"
+   377→          description="تعداد نوبت‌ها به تفکیک روز هفته و ساعت"
+   378→          config={{}}
+   379→          loading={loading}
+   380→          height="h-64"
+   381→        >
+   382→          <div className="flex h-full flex-col gap-1 overflow-x-auto" dir="rtl">
+   383→            <div className="grid grid-cols-8 gap-1 text-center text-[10px] font-medium text-muted-foreground">
+   384→              <span />
+   385→              {JALALI_WEEKDAYS_SHORT.map((w) => (
+   386→                <span key={w}>{w}</span>
+   387→              ))}
+   388→            </div>
+   389→            <div className="grid flex-1 grid-flow-row grid-cols-8 content-stretch gap-1">
+   390→              {HEAT_HOURS.map((h) => (
+   391→                <div key={h} className="col-span-8 grid grid-cols-8 items-stretch gap-1">
+   392→                  <span className="self-center text-[10px] tabular-nums text-muted-foreground">{faTime(`${String(h).padStart(2, "0")}:00`)}</span>
+   393→                  {[0, 1, 2, 3, 4, 5, 6].map((w) => {
+   394→                    const count = heat.counts.get(`${w}|${h}`) ?? 0;
+   395→                    const intensity = count === 0 ? 0 : Math.max(1, Math.ceil((count / heat.max) * HEAT_LADDER.length));
+   396→                    return (
+   397→                      <div
+   398→                        key={w}
+   399→                        title={`${JALALI_WEEKDAYS_SHORT[w]} ساعت ${faTime(`${String(h).padStart(2, "0")}:00`)} — ${toFa(count)} نوبت`}
+   400→                        className={`min-h-4 rounded-[4px] ${count === 0 ? "bg-muted" : HEAT_LADDER[intensity - 1]}`}
+   401→                      />
+   402→                    );
+   403→                  })}
+   404→                </div>
+   405→              ))}
+   406→            </div>
+   407→          </div>
+   408→        </ChartCard>
+   409→      </section>
+   410→
+   411→      {/* charts row 2 */}
+   412→      <section className="grid gap-4 lg:grid-cols-3" aria-label="نمودار درآمد و نظرات">
+   413→        <ChartCard title="درآمد ۶ ماه اخیر" description="سهم خالص شما پس از کسر کمیسیون" config={incomeConfig} loading={loading}>
+   414→          <BarChart data={income6} margin={{ top: 8, left: 0, right: 8 }}>
+   415→            <CartesianGrid vertical={false} strokeDasharray="3 3" />
+   416→            <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} reversed />
+   417→            <YAxis
+   418→              tickLine={false}
+   419→              axisLine={false}
+   420→              width={52}
+   421→              tickFormatter={(v) => tomanCompact(Number(v)).replace(" تومان", "")}
+   422→            />
+   423→            <ChartTooltip
+   424→              content={
+   425→                <ChartTooltipContent
+   426→                  labelFormatter={(l) => String(l)}
+   427→                  formatter={(v, _n, item) => [
+   428→                    toman(Number(v)),
+   429→                    `ناخالص: ${toman(Number(item?.payload?.gross ?? 0))} • خالص`,
+   430→                  ]}
+   431→                />
+   432→              }
+   433→            />
+   434→            <Bar dataKey="net" fill="var(--color-net)" radius={6} />
+   435→          </BarChart>
+   436→        </ChartCard>
+   437→
+   438→        <ChartCard
+   439→          title="نوع ویزیت‌ها"
+   440→          description="سهم هر نوع ویزیت از نوبت‌های ثبت‌شده"
+   441→          config={donutConfig}
+   442→          loading={loading}
+   443→          legend={
+   444→            <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 pt-1 text-xs text-muted-foreground">
+   445→              {visitTypeData.map((d) => (
+   446→                <span key={d.key} className="flex items-center gap-1.5">
+   447→                  <span
+   448→                    className="size-2 rounded-[2px]"
+   449→                    style={{ backgroundColor: `var(--color-${d.key})` }}
+   450→                    aria-hidden
+   451→                  />
+   452→                  {d.label} ({toFa(d.value)})
+   453→                </span>
+   454→              ))}
+   455→            </div>
+   456→          }
+   457→        >
+   458→          <PieChart>
+   459→            <ChartTooltip content={<ChartTooltipContent formatter={(v) => [`${faNum(Number(v))} نوبت`, "تعداد"]} />} />
+   460→            <Pie data={visitTypeData} dataKey="value" nameKey="key" innerRadius={52} outerRadius={82} paddingAngle={3} strokeWidth={0}>
+   461→              {visitTypeData.map((d) => (
+   462→                <Cell key={d.key} fill={`var(--color-${d.key})`} />
+   463→              ))}
+   464→            </Pie>
+   465→          </PieChart>
+   466→        </ChartCard>
+   467→
+   468→        <ChartCard title="روند امتیاز" description="میانگین ماهانه امتیاز نظرات" config={ratingConfig} loading={loading}>
+   469→          <LineChart data={ratingTrend} margin={{ top: 8, left: 0, right: 8 }}>
+   470→            <CartesianGrid vertical={false} strokeDasharray="3 3" />
+   471→            <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} reversed interval={1} />
+   472→            <YAxis domain={[0, 5]} tickLine={false} axisLine={false} width={24} tickFormatter={(v) => toFa(Number(v))} />
+   473→            <ChartTooltip
+   474→              content={
+   475→                <ChartTooltipContent
+   476→                  labelFormatter={(l) => String(l)}
+   477→                  formatter={(v) => [`${toFa(Number(v).toFixed(1))} از ۵`, "میانگین امتیاز"]}
+   478→                />
+   479→              }
+   480→            />
+   481→            <Line dataKey="avg" type="monotone" stroke="var(--color-avg)" strokeWidth={2.4} dot={{ r: 3 }} connectNulls />
+   482→          </LineChart>
+   483→        </ChartCard>
+   484→      </section>
+   485→
+   486→      {/* today program + upcoming */}
+   487→      <section className="grid gap-4 lg:grid-cols-3" aria-label="برنامه امروز و نوبت‌های پیش رو">
+   488→        <Card className="lg:col-span-2">
+   489→          <CardHeader className="flex flex-row items-start justify-between gap-2 pb-3">
+   490→            <div className="space-y-1">
+   491→              <CardTitle className="text-base">برنامه امروز</CardTitle>
+   492→              <CardDescription className="text-xs">{faDate(today)}</CardDescription>
+   493→            </div>
+   494→            <Button asChild variant="ghost" size="sm" className="h-8 text-primary">
+   495→              <Link href="/doctor/calendar">
+   496→                تقویم کامل
+   497→                <ChevronLeft className="size-4" aria-hidden />
+   498→              </Link>
+   499→            </Button>
+   500→          </CardHeader>
+   501→          <CardContent>
+   502→            {loading ? (
+   503→              <div className="space-y-2">
+   504→                {Array.from({ length: 4 }).map((_, i) => (
+   505→                  <div key={i} className="h-16 animate-pulse rounded-xl bg-muted" />
+   506→                ))}
+   507→              </div>
+   508→            ) : stats.todays.length === 0 ? (
+   509→              <EmptyState
+   510→                icon={CalendarOff}
+   511→                title="امروز نوبتی ندارید"
+   512→                description="برای ثبت ساعات کاری به بخش «روزها و ساعات کاری» سر بزنید."
+   513→                className="py-10"
+   514→              />
+   515→            ) : (
+   516→              <ul className="space-y-2">
+   517→                {stats.todays.map((a) => {
+   518→                  const done = a.status === "completed";
+   519→                  const TypeIcon = VISIT_TYPE_ICONS[a.visitType];
+   520→                  return (
+   521→                    <motion.li
+   522→                      key={a.id}
+   523→                      initial={{ opacity: 0, y: 6 }}
+   524→                      animate={{ opacity: done ? 0.65 : 1, y: 0 }}
+   525→                      transition={{ duration: 0.25 }}
+   526→                      className={`flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border p-3 transition-colors ${
+   527→                        done ? "border-dashed bg-muted/30" : "hover:border-primary/40"
+   528→                      }`}
+   529→                    >
+   530→                      <span className="inline-flex min-w-14 flex-col items-center rounded-lg bg-primary/10 px-2 py-1 text-primary">
+   531→                        <span className="text-sm font-bold tabular-nums">{faTime(a.time)}</span>
+   532→                      </span>
+   533→                      <div className="min-w-0 flex-1">
+   534→                        <p className="truncate text-sm font-semibold">{appointmentPatientName(a, patientMap)}</p>
+   535→                        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+   536→                          <TypeIcon className="size-3.5" aria-hidden />
+   537→                          {VISIT_TYPE_LABELS[a.visitType]}
+   538→                          {a.reason && <span className="truncate">— {a.reason}</span>}
+   539→                        </p>
+   540→                      </div>
+   541→                      <StatusBadge status={a.status} label={APPOINTMENT_STATUS_LABELS[a.status]} />
+   542→                      <div className="flex flex-wrap items-center gap-1.5">
+   543→                        {a.status === "pending" && (
+   544→                          <Button size="sm" variant="outline" className="h-8 text-emerald-600" onClick={() => quickAction(a, "confirmed")}>
+   545→                            <CheckCircle2 className="size-3.5" aria-hidden />
+   546→                            تأیید
+   547→                          </Button>
+   548→                        )}
+   549→                        {(a.status === "pending" || a.status === "confirmed") && (
+   550→                          <>
+   551→                            <Button size="sm" variant="outline" className="h-8" onClick={() => quickAction(a, "completed")}>
+   552→                              <Stethoscope className="size-3.5" aria-hidden />
+   553→                              انجام‌شد
+   554→                            </Button>
+   555→                            <Button size="sm" variant="ghost" className="h-8 text-rose-600 hover:text-rose-700" onClick={() => setCancelTarget(a)}>
+   556→                              <XCircle className="size-3.5" aria-hidden />
+   557→                              لغو
+   558→                            </Button>
+   559→                          </>
+   560→                        )}
+   561→                        <Button asChild size="sm" variant="ghost" className="h-8 text-muted-foreground">
+   562→                          <Link href={`/doctor/patients/${a.patientId}`}>
+   563→                            <UserRound className="size-3.5" aria-hidden />
+   564→                            پرونده
+   565→                          </Link>
+   566→                        </Button>
+   567→                      </div>
+   568→                    </motion.li>
+   569→                  );
+   570→                })}
+   571→              </ul>
+   572→            )}
+   573→          </CardContent>
+   574→        </Card>
+   575→
+   576→        <Card>
+   577→          <CardHeader className="flex flex-row items-start justify-between gap-2 pb-3">
+   578→            <CardTitle className="text-base">نوبت‌های پیش رو</CardTitle>
+   579→            <Button asChild variant="ghost" size="sm" className="h-8 text-primary">
+   580→              <Link href="/doctor/appointments">
+   581→                همه نوبت‌ها
+   582→                <ChevronLeft className="size-4" aria-hidden />
+   583→              </Link>
+   584→            </Button>
+   585→          </CardHeader>
+   586→          <CardContent>
+   587→            {upcoming.length === 0 ? (
+   588→              <EmptyState icon={CalendarOff} title="نوبت پیش‌رویی وجود ندارد" className="py-10" />
+   589→            ) : (
+   590→              <ul className="space-y-2.5">
+   591→                {upcoming.map((a) => {
+   592→                  const TypeIcon = VISIT_TYPE_ICONS[a.visitType];
+   593→                  return (
+   594→                    <li key={a.id} className="flex items-center gap-3 rounded-xl border p-3 transition-colors hover:border-primary/40">
+   595→                      <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+   596→                        <TypeIcon className="size-5" aria-hidden />
+   597→                      </span>
+   598→                      <div className="min-w-0 flex-1">
+   599→                        <p className="truncate text-sm font-semibold">{appointmentPatientName(a, patientMap)}</p>
+   600→                        <p className="text-xs text-muted-foreground">
+   601→                          {faFromNow(a.date)} • {faTime(a.time)} • {VISIT_TYPE_LABELS[a.visitType]}
+   602→                        </p>
+   603→                      </div>
+   604→                      <StatusBadge status={a.status} label={APPOINTMENT_STATUS_LABELS[a.status]} />
+   605→                    </li>
+   606→                  );
+   607→                })}
+   608→              </ul>
+   609→            )}
+   610→          </CardContent>
+   611→        </Card>
+   612→      </section>
+   613→
+   614→      {/* latest reviews */}
+   615→      <section>
+   616→        <Card>
+   617→          <CardHeader className="flex flex-row items-start justify-between gap-2 pb-3">
+   618→            <div className="space-y-1">
+   619→              <CardTitle className="text-base">آخرین نظرات</CardTitle>
+   620→              <CardDescription className="text-xs">جدیدترین بازخوردهای بیماران درباره شما</CardDescription>
+   621→            </div>
+   622→            <Button asChild variant="ghost" size="sm" className="h-8 text-primary">
+   623→              <Link href="/doctor/reviews">
+   624→                مشاهده همه
+   625→                <ChevronLeft className="size-4" aria-hidden />
+   626→              </Link>
+   627→            </Button>
+   628→          </CardHeader>
+   629→          <CardContent>
+   630→            {latestReviews.length === 0 ? (
+   631→              <EmptyState icon={Star} title="هنوز نظری ثبت نشده است" className="py-10" />
+   632→            ) : (
+   633→              <div className="grid gap-3 md:grid-cols-3">
+   634→                {latestReviews.map((r) => {
+   635→                  const patient = patientMap.get(r.patientId);
+   636→                  return (
+   637→                    <motion.div
+   638→                      key={r.id}
+   639→                      whileHover={{ y: -3 }}
+   640→                      className="space-y-2 rounded-xl border p-4 transition-shadow hover:shadow-md"
+   641→                    >
+   642→                      <div className="flex items-center justify-between gap-2">
+   643→                        <p className="truncate text-sm font-semibold">{patient?.name ?? "بیمار"}</p>
+   644→                        <span className="shrink-0 text-[11px] text-muted-foreground">{faFromNow(r.createdAtISO)}</span>
+   645→                      </div>
+   646→                      <RatingStars value={r.rating} />
+   647→                      <p className="line-clamp-3 text-sm leading-relaxed text-muted-foreground">{r.comment}</p>
+   648→                      {r.reply && <Badge variant="outline" className="text-[11px] text-muted-foreground">پاسخ داده‌اید</Badge>}
+   649→                    </motion.div>
+   650→                  );
+   651→                })}
+   652→              </div>
+   653→            )}
+   654→          </CardContent>
+   655→        </Card>
+   656→      </section>
+   657→
+   658→      {/* cancel confirm dialog (shared for today list) */}
+   659→      <AlertDialog open={!!cancelTarget} onOpenChange={(o) => !o && setCancelTarget(null)}>
+   660→        <AlertDialogContent>
+   661→          <AlertDialogHeader>
+   662→            <AlertDialogTitle>لغو این نوبت؟</AlertDialogTitle>
+   663→            <AlertDialogDescription>
+   664→              نوبت {toFa(cancelTarget?.code ?? "")} برای{" "}
+   665→              {cancelTarget ? appointmentPatientName(cancelTarget, patientMap) : ""} در ساعت{" "}
+   666→              {faTime(cancelTarget?.time ?? "")} لغو می‌شود
+   667→              {cancelTarget?.paymentStatus === "paid" && " و مبلغ پرداختی به بیمار بازگشت داده می‌شود"}.
+   668→            </AlertDialogDescription>
+   669→          </AlertDialogHeader>
+   670→          <AlertDialogFooter>
+   671→            <AlertDialogCancel>انصراف</AlertDialogCancel>
+   672→            <AlertDialogAction className="bg-rose-600 text-white hover:bg-rose-700" onClick={doCancel}>
+   673→              بله، لغو کن
+   674→            </AlertDialogAction>
+   675→          </AlertDialogFooter>
+   676→        </AlertDialogContent>
+   677→      </AlertDialog>
+   678→    </div>
+   679→  );
+   680→}
+   681→

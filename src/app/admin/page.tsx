@@ -1,5 +1,7 @@
 "use client";
-import { PageHeader } from "@/components/shared/page-header";
+
+import { AdminDashboard } from "@/features/admin/dashboard";
+
 export default function AdminDashboardPage() {
-  return <PageHeader title="داشبورد مدیریت" description="این صفحه در مرحله بعد ساخته می‌شود." />;
+  return <AdminDashboard />;
 }

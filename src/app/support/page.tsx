@@ -1,5 +1,7 @@
 "use client";
-import { PageHeader } from "@/components/shared/page-header";
+
+import { SupportDashboard } from "@/features/support/dashboard";
+
 export default function SupportDashboardPage() {
-  return <PageHeader title="داشبورد پشتیبانی" description="این صفحه در مرحله بعد ساخته می‌شود." />;
+  return <SupportDashboard />;
 }
