@@ -1,0 +1,1215 @@
+     1→/**
+     2→ * Deterministic seed data for the whole demo.
+     3→ * - Uses @faker-js/faker (fa locale) with a FIXED seed so data is stable.
+     4→ * - All dates are ISO strings; "today" is the anchor for realistic timelines.
+     5→ * - One main demo doctor (دکتر سارا محمدی), one main demo patient (علی رضایی),
+     6→ *   one admin (محمد کریمی) and one support agent (نگار حسینی) with rich linked data.
+     7→ */
+     8→
+     9→import { fakerFA } from "@faker-js/faker";
+    10→import type { DbSeed, Appointment, Consultation, Doctor, FamilyMember, LabOrder, Patient, Review, Settlement, Ticket, Transaction } from "@/types";
+    11→import {
+    12→  CITIES,
+    13→  CLINIC_SERVICES,
+    14→  DEFAULT_COMMISSION_RATE,
+    15→  INSURERS,
+    16→  LAB_TESTS,
+    17→  LAB_ORDER_STEPS,
+    18→  LANGUAGES,
+    19→  SPECIALTIES,
+    20→  SPECIALTY_FEE_RANGE,
+    21→  type AppointmentStatus,
+    22→  type LabOrderStatus,
+    23→  type TicketCategory,
+    24→  type TicketPriority,
+    25→  type TicketStatus,
+    26→  type VisitType,
+    27→} from "@/lib/constants";
+    28→import { addDaysISO, dateToISO, jalaliMonthKey, subDaysISO, todayISO, nowISODateTime } from "@/lib/jalali";
+    29→import { generateSlotsForDate, isDoctorWorking } from "@/lib/schedule";
+    30→import * as P from "@/mock/pools";
+    31→
+    32→/* ------------------------------ helpers ------------------------------- */
+    33→
+    34→const SEED = 20261030;
+    35→const pick = <T,>(arr: readonly T[]): T => fakerFA.helpers.arrayElement(arr);
+    36→const int = (min: number, max: number) => fakerFA.number.int({ min, max });
+    37→const bool = (probability = 0.5) => fakerFA.number.int({ min: 0, max: 99 }) < probability * 100;
+    38→const TODAY = () => todayISO();
+    39→
+    40→let seq = 0;
+    41→const nid = (prefix: string) => `${prefix}-${String(++seq).padStart(4, "0")}`;
+    42→let noCode = 10000;
+    43→const code = (prefix: string) => `${prefix}-${++noCode}`;
+    44→
+    45→function randTime(): string {
+    46→  const h = int(8, 20);
+    47→  const m = pick([0, 15, 30, 45]);
+    48→  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    49→}
+    50→
+    51→function randDateTime(dateISO: string, minHour = 9, maxHour = 18): string {
+    52→  const h = int(minHour, maxHour);
+    53→  const m = pick([0, 15, 30, 45]);
+    54→  return `${dateISO}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
+    55→}
+    56→
+    57→/** add N hours to an ISO datetime string, returning an ISO datetime string */
+    58→function plusHours(isoDateTime: string, hours: number): string {
+    59→  const d = new Date(isoDateTime);
+    60→  const shifted = new Date(d.getTime() + hours * 3600_000);
+    61→  return `${dateToISO(shifted)}T${String(shifted.getHours()).padStart(2, "0")}:${String(shifted.getMinutes()).padStart(2, "0")}:00`;
+    62→}
+    63→
+    64→function personName(gender: "male" | "female"): string {
+    65→  return `${gender === "female" ? pick(P.FEMALE_NAMES) : pick(P.MALE_NAMES)} ${pick(P.LAST_NAMES)}`;
+    66→}
+    67→
+    68→/* --------------------------- weekly schedules -------------------------- */
+    69→
+    70→type RangeSpec = [string, string, "in-person" | "online"];
+    71→
+    72→function makeRange(spec: RangeSpec, duration: number, buffer: number, maxPerSlot: number) {
+    73→  return {
+    74→    id: nid("tr"),
+    75→    start: spec[0],
+    76→    end: spec[1],
+    77→    visitType: spec[2],
+    78→    duration,
+    79→    buffer,
+    80→    maxPerSlot,
+    81→  };
+    82→}
+    83→
+    84→const RANGE_PRESETS: RangeSpec[][] = [
+    85→  [["09:00", "13:00", "in-person"]],
+    86→  [["09:00", "13:00", "in-person"], ["16:00", "20:00", "in-person"]],
+    87→  [["10:00", "14:00", "in-person"], ["17:00", "20:00", "online"]],
+    88→  [["08:30", "12:30", "in-person"], ["15:00", "18:00", "in-person"]],
+    89→  [["16:00", "21:00", "in-person"]],
+    90→  [["09:00", "12:00", "online"], ["14:00", "17:00", "in-person"]],
+    91→  [["11:00", "19:00", "in-person"]],
+    92→];
+    93→
+    94→function buildWeeklySchedule(activeDays: number[], preset: RangeSpec[], duration: number, buffer: number, maxPerSlot: number) {
+    95→  const schedule: Doctor["weeklySchedule"] = {};
+    96→  for (let day = 0; day < 7; day++) {
+    97→    schedule[day] = activeDays.includes(day)
+    98→      ? { active: true, ranges: preset.map((r) => makeRange(r, duration, buffer, maxPerSlot)) }
+    99→      : { active: false, ranges: [] };
+   100→  }
+   101→  return schedule;
+   102→}
+   103→
+   104→/* ------------------------------- seed -------------------------------- */
+   105→
+   106→export function buildSeed(): DbSeed {
+   107→  fakerFA.seed(SEED);
+   108→  seq = 0;
+   109→  noCode = 10000;
+   110→
+   111→  const today = TODAY();
+   112→
+   113→  /* ---------------------------- centers ---------------------------- */
+   114→  const centers: DbSeed["centers"] = [];
+   115→  const centerSpecs: [string, "clinic" | "lab" | "hospital", string][] = [
+   116→    ["کلینیک تخصصی پوست و زیبایی آرامش", "clinic", "تهران"],
+   117→    ["مجتمع پزشکی ابن‌سینا", "clinic", "تهران"],
+   118→    ["آزمایشگاه پاتوبیولوژی پارس", "lab", "تهران"],
+   119→    ["آزمایشگاه مراکش", "lab", "مشهد"],
+   120→    ["بیمارستان تخصصی میعاد", "hospital", "تهران"],
+   121→    ["آزمایشگاه زندگی‌آباد", "lab", "تهران"],
+   122→    ["کلینیک دندانپزشکی لبخند", "clinic", "اصفهان"],
+   123→    ["آزمایشگاه دی میلاد", "lab", "اصفهان"],
+   124→    ["مرکز قلب امیرکبیر", "clinic", "شیراز"],
+   125→    ["آزمایشگاه خون‌رسان", "lab", "تبریز"],
+   126→    ["بیمارستان آموزشی شهراز", "hospital", "شیراز"],
+   127→    ["کلینیک توانبخشی نیکان", "clinic", "کرج"],
+   128→    ["آزمایشگاه سینا", "lab", "اهواز"],
+   129→    ["درمانگاه شبانه‌روزی امید", "clinic", "مشهد"],
+   130→  ];
+   131→  for (const [name, type, city] of centerSpecs) {
+   132→    centers.push({
+   133→      id: nid("cen"),
+   134→      name, type, city,
+   135→      address: pick(P.ADDRESSES).replace("{n}", String(int(2, 240))),
+   136→      phone: `0${pick(["21", "31", "51", "71", "41", "26", "61"])}${String(int(20000000, 89999999))}`,
+   137→      active: bool(0.9),
+   138→      homeSampling: type === "lab" ? bool(0.6) : undefined,
+   139→    });
+   140→  }
+   141→  const labCenters = centers.filter((c) => c.type === "lab");
+   142→
+   143→  /* ---------------------------- doctors ---------------------------- */
+   144→
+   145→  // main demo doctor first
+   146→  const mainDoctor: Doctor = {
+   147→    id: "doc-0001",
+   148→    name: "دکتر سارا محمدی",
+   149→    gender: "female",
+   150→    specialtyId: "derma",
+   151→    city: "تهران",
+   152→    address: "سعادت‌آباد، بلوار دریا، نبش خیابان صراف‌ها، ساختمان مدیکال، طبقه ۳",
+   153→    licenseNumber: "12-345678",
+   154→    experienceYears: 12,
+   155→    bio: "دکتر سارا محمدی، متخصص پوست و مو با بیش از ۱۲ سال سابقه درمانی. عضو انجمن پوست ایران و مدرس دوره‌های لیزر و زیبایی. حوزه‌های تخصصی: درمان آکنه و جوشگاه، درمان لک و ملانوز، لیزر موهای زائد و مشاوره مراقبت از پوست. در حال حاضر در کلینیک تخصصی پوست و زیبایی آرامش تهران حضور دارند و ویزیت آنلاین نیز ارائه می‌کنند.",
+   156→    education: [
+   157→      "دکترای عمومی پزشکی از دانشگاه علوم پزشکی تهران",
+   158→      "دکترای تخصصی پوست از دانشگاه علوم پزشکی شهید بهشتی",
+   159→      "فلوشیپ لیزرهای پزشکی از دانشگاه علوم پزشکی ایران",
+   160→      "عضو انجمن پوست ایران",
+   161→    ],
+   162→    certificates: [
+   163→      "گواهینامه بین‌المللی روش‌های پیشرفته لیزر",
+   164→      "کارگاه زیبایی و لیزر پزشکی",
+   165→      "دوره مشاوره آنلاین پزشکی",
+   166→    ],
+   167→    avatarHue: 173,
+   168→    visitFee: 480_000,
+   169→    phoneFee: 350_000,
+   170→    textFee: 250_000,
+   171→    videoFee: 550_000,
+   172→    rating: 4.8,
+   173→    reviewCount: 24,
+   174→    verification: "verified",
+   175→    accountStatus: "active",
+   176→    commissionRate: 12,
+   177→    languages: ["فارسی", "انگلیسی"],
+   178→    insurers: [INSURERS[0], INSURERS[1]],
+   179→    availableOnline: true,
+   180→    weeklySchedule: {
+   181→      0: { active: true, ranges: [
+   182→        makeRange(["09:00", "13:00", "in-person"], 15, 0, 2),
+   183→        makeRange(["16:00", "20:00", "in-person"], 15, 0, 2),
+   184→      ] },
+   185→      1: { active: true, ranges: [
+   186→        makeRange(["09:00", "13:00", "in-person"], 15, 0, 2),
+   187→        makeRange(["17:00", "20:00", "online"], 20, 5, 1),
+   188→      ] },
+   189→      2: { active: true, ranges: [makeRange(["10:00", "14:00", "in-person"], 15, 0, 2)] },
+   190→      3: { active: true, ranges: [
+   191→        makeRange(["09:00", "13:00", "in-person"], 15, 0, 2),
+   192→        makeRange(["16:00", "19:30", "online"], 20, 5, 1),
+   193→      ] },
+   194→      4: { active: true, ranges: [makeRange(["09:00", "12:00", "in-person"], 15, 0, 1)] },
+   195→      5: { active: false, ranges: [] },
+   196→      6: { active: false, ranges: [] },
+   197→    },
+   198→    offDays: [
+   199→      { id: nid("off"), startDate: addDaysISO(today, 12), endDate: addDaysISO(today, 14), reason: "مرخصی سفر خانوادگی" },
+   200→      { id: nid("off"), startDate: addDaysISO(today, 27), endDate: addDaysISO(today, 27), reason: "دوره آموزشی لیزر" },
+   201→    ],
+   202→    overrides: [
+   203→      {
+   204→        id: nid("ovr"),
+   205→        date: today,
+   206→        ranges: [
+   207→          makeRange(["09:00", "13:00", "in-person"], 15, 0, 2),
+   208→          makeRange(["16:00", "19:00", "in-person"], 15, 0, 2),
+   209→        ],
+   210→        note: "شیفت اضافه کلینیک",
+   211→      },
+   212→      {
+   213→        id: nid("ovr"),
+   214→        date: addDaysISO(today, 2),
+   215→        ranges: [makeRange(["08:00", "12:00", "in-person"], 15, 0, 2)],
+   216→        note: "جبران مرخصی هفته قبل",
+   217→      },
+   218→    ],
+   219→    isDemo: true,
+   220→  };
+   221→
+   222→  const doctors: Doctor[] = [mainDoctor];
+   223→  const usedNames = new Set([mainDoctor.name]);
+   224→
+   225→  // one more derma doctor, then cover the rest of the specialties
+   226→  for (let i = 0; i < 29; i++) {
+   227→    const specialtyId = i === 0 ? "derma" : SPECIALTIES[i % SPECIALTIES.length].id;
+   228→    const female = bool(0.5);
+   229→    let name = `دکتر ${personName(female ? "female" : "male")}`;
+   230→    let guard = 0;
+   231→    while (usedNames.has(name) && guard++ < 40) {
+   232→      name = `دکتر ${personName(female ? "female" : "male")}`;
+   233→    }
+   234→    usedNames.add(name);
+   235→    const city = pick(CITIES);
+   236→    const [feeMin, feeMax] = SPECIALTY_FEE_RANGE[specialtyId];
+   237→    const visitFee = Math.round(int(feeMin, feeMax) / 10_000) * 10_000;
+   238→    const experienceYears = int(3, 28);
+   239→    const activeDays = fakerFA.helpers
+   240→      .arrayElements([0, 1, 2, 3, 4, 5, 6], int(3, 5))
+   241→      .sort((a, b) => a - b);
+   242→    const verificationRoll = int(1, 100);
+   243→    const verification = verificationRoll <= 12 ? "pending" : verificationRoll <= 15 ? "rejected" : "verified";
+   244→    const accountStatus = verification === "pending" ? "pending" : verification === "rejected" ? "suspended" : bool(0.06) ? "suspended" : "active";
+   245→    const specialtyTitle = SPECIALTIES.find((s) => s.id === specialtyId)!.title;
+   246→    doctors.push({
+   247→      id: `doc-${String(i + 2).padStart(4, "0")}`,
+   248→      name,
+   249→      gender: female ? "female" : "male",
+   250→      specialtyId,
+   251→      city,
+   252→      address: `${city}، ${pick(P.ADDRESSES).replace("{n}", String(int(2, 240)))}`,
+   253→      licenseNumber: `${int(1, 99)}-${int(100000, 999999)}`,
+   254→      experienceYears,
+   255→      bio: `${name}، ${specialtyTitle}، با بیش از ${experienceYears} سال سابقه درمانی و آموزش. حوزه‌های کاری: ${pick(P.APPOINTMENT_REASONS)}، ${pick(P.APPOINTMENT_REASONS)} و مشاوره تخصصی. در حال حاضر عضو انجمن تخصصی مربوطه بوده و در سامانه دکترها نوبت حضوری و آنلاین ارائه می‌کنند.`,
+   256→      education: [
+   257→        `دکترای عمومی پزشکی از دانشگاه ${pick(P.EDU_UNIS)}`,
+   258→        `دکترای تخصصی ${specialtyTitle} از دانشگاه ${pick(P.EDU_UNIS)}`,
+   259→        bool(0.5) ? pick(P.CERTIFICATES) : `فلوشیپ ${pick(P.EDU_FIELDS)} از دانشگاه ${pick(P.EDU_UNIS)}`,
+   260→      ],
+   261→      certificates: fakerFA.helpers.arrayElements(P.CERTIFICATES, int(1, 3)),
+   262→      avatarHue: int(0, 359),
+   263→      visitFee,
+   264→      phoneFee: Math.round(visitFee * 0.7 / 10_000) * 10_000,
+   265→      textFee: Math.round(visitFee * 0.5 / 10_000) * 10_000,
+   266→      videoFee: Math.round(visitFee * 1.15 / 10_000) * 10_000,
+   267→      rating: 0,
+   268→      reviewCount: 0,
+   269→      verification,
+   270→      accountStatus,
+   271→      commissionRate: DEFAULT_COMMISSION_RATE + (bool(0.3) ? int(-3, 5) : 0),
+   272→      languages: fakerFA.helpers.arrayElements(LANGUAGES, bool(0.4) ? 2 : 1),
+   273→      insurers: fakerFA.helpers.arrayElements(INSURERS, int(1, 3)),
+   274→      availableOnline: bool(0.55),
+   275→      weeklySchedule: buildWeeklySchedule(activeDays, pick(RANGE_PRESETS), pick([15, 20, 30]), pick([0, 0, 5, 10]), int(1, 3)),
+   276→      offDays: bool(0.4)
+   277→        ? [{
+   278→            id: nid("off"),
+   279→            startDate: addDaysISO(today, int(5, 25)),
+   280→            endDate: addDaysISO(today, int(26, 30)),
+   281→            reason: pick(["مرخصی استعلاجی", "سفر کاری", "دوره آموزشی تخصصی", "مراسم خانوادگی"]),
+   282→          }]
+   283→        : [],
+   284→      overrides: [],
+   285→      isDemo: false,
+   286→    });
+   287→  }
+   288→
+   289→  /* ---------------------------- patients ---------------------------- */
+   290→
+   291→  const mainPatient: Patient = {
+   292→    id: "pat-0001",
+   293→    name: "علی رضایی",
+   294→    phone: "0912-345-6789",
+   295→    nationalId: "0079458123",
+   296→    gender: "male",
+   297→    birthDateISO: "1990-04-15",
+   298→    city: "تهران",
+   299→    address: "تهران، خیابان کارگر شمالی، کوچه گلستان، پلاک ۱۲",
+   300→    insurance: INSURERS[0],
+   301→    bloodType: "O+",
+   302→    walletBalance: 1_850_000,
+   303→    blocked: false,
+   304→    avatarHue: 210,
+   305→    allergies: ["پنی‌سیلین"],
+   306→    chronicConditions: ["فشار خون بالا"],
+   307→    family: [
+   308→      { id: nid("fam"), name: "سمیرا رضایی", relation: "همسر", gender: "female", birthDateISO: "1993-09-02", nationalId: "0064581223" },
+   309→      { id: nid("fam"), name: "نیما رضایی", relation: "پسر", gender: "male", birthDateISO: "2019-12-11", nationalId: "0091258744" },
+   310→      { id: nid("fam"), name: "شیرین کاظمی", relation: "مادر", gender: "female", birthDateISO: "1965-02-20", nationalId: "0021456987" },
+   311→    ],
+   312→    createdAtISO: `${subDaysISO(today, 380)}T09:12:00`,
+   313→    isDemo: true,
+   314→  };
+   315→
+   316→  const patients: Patient[] = [mainPatient];
+   317→  const usedPatientNames = new Set([mainPatient.name]);
+   318→  for (let i = 0; i < 119; i++) {
+   319→    const female = bool(0.5);
+   320→    let name = personName(female ? "female" : "male");
+   321→    let guard = 0;
+   322→    while (usedPatientNames.has(name) && guard++ < 40) name = personName(female ? "female" : "male");
+   323→    usedPatientNames.add(name);
+   324→    // spread registration over last 12 months with growth (more recent = more)
+   325→    const daysAgo = Math.round(Math.abs(fakerFA.number.float({ min: -10, max: 360 })));
+   326→    patients.push({
+   327→      id: `pat-${String(i + 2).padStart(4, "0")}`,
+   328→      name,
+   329→      phone: `09${pick(["12", "19", "35", "02", "91", "21", "90"])}${String(int(1000000, 9999999))}`,
+   330→      nationalId: String(int(1000000000, 9999999999)),
+   331→      gender: female ? "female" : "male",
+   332→      birthDateISO: `${int(1935, 2005)}-${String(int(1, 12)).padStart(2, "0")}-${String(int(1, 28)).padStart(2, "0")}`,
+   333→      city: pick(CITIES),
+   334→      address: `${pick(CITIES)}، ${pick(P.ADDRESSES).replace("{n}", String(int(2, 240)))}`,
+   335→      insurance: pick(INSURERS),
+   336→      bloodType: pick(["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"]),
+   337→      walletBalance: bool(0.3) ? int(0, 2_000_000) : 0,
+   338→      blocked: bool(0.04),
+   339→      avatarHue: int(0, 359),
+   340→      allergies: bool(0.3) ? fakerFA.helpers.arrayElements(["پنی‌سیلین", "گردو", "پول پرند", "گلوتن", "لاکتوز", "آسپرین"], 1) : [],
+   341→      chronicConditions: bool(0.35) ? fakerFA.helpers.arrayElements(["دیابت نوع ۲", "فشار خون بالا", "آسم", "کم‌کاری تیروئید", "میگرن", "کم‌خونی"], int(1, 2)) : [],
+   342→      family: bool(0.25)
+   343→        ? [{
+   344→            id: nid("fam"),
+   345→            name: personName(bool(0.5) ? "female" : "male"),
+   346→            relation: pick(P.RELATIONS),
+   347→            gender: bool(0.5) ? "female" : "male",
+   348→            birthDateISO: `${int(1930, 2015)}-${String(int(1, 12)).padStart(2, "0")}-${String(int(1, 28)).padStart(2, "0")}`,
+   349→            nationalId: String(int(1000000000, 9999999999)),
+   350→          } satisfies FamilyMember]
+   351→        : [],
+   352→      createdAtISO: `${subDaysISO(today, daysAgo)}T${String(int(8, 21)).padStart(2, "0")}:${pick(["05", "17", "30", "45"])}:00`,
+   353→      isDemo: false,
+   354→    });
+   355→  }
+   356→
+   357→  /* -------------------------- appointments -------------------------- */
+   358→
+   359→  const appointments: Appointment[] = [];
+   360→  const activeDoctors = doctors.filter((d) => d.accountStatus === "active");
+   361→
+   362→  function feeFor(doctor: Doctor, visitType: VisitType): number {
+   363→    if (visitType === "in-person") return doctor.visitFee;
+   364→    if (visitType === "phone") return doctor.phoneFee;
+   365→    if (visitType === "video") return doctor.videoFee;
+   366→    return doctor.textFee;
+   367→  }
+   368→
+   369→  function addAppointment(
+   370→    doctor: Doctor,
+   371→    patient: Patient,
+   372→    dateISO: string,
+   373→    time: string,
+   374→    status: AppointmentStatus,
+   375→    visitType: VisitType = "in-person",
+   376→    opts: { forFamilyMember?: FamilyMember; reason?: string } = {}
+   377→  ): Appointment {
+   378→    const fee = feeFor(doctor, visitType);
+   379→    const paymentStatus =
+   380→      status === "completed" ? "paid" : status === "cancelled" ? (bool(0.5) ? "refunded" : "unpaid") : status === "no-show" ? "paid" : bool(0.85) ? "paid" : "unpaid";
+   381→    const a: Appointment = {
+   382→      id: nid("apt"),
+   383→      code: code("NO"),
+   384→      doctorId: doctor.id,
+   385→      patientId: patient.id,
+   386→      forFamilyMember: opts.forFamilyMember,
+   387→      date: dateISO,
+   388→      time,
+   389→      duration: visitType === "in-person" ? 15 : 20,
+   390→      visitType,
+   391→      status,
+   392→      paymentStatus,
+   393→      fee,
+   394→      commission: Math.round(fee * (doctor.commissionRate / 100)),
+   395→      reason: opts.reason ?? pick(P.APPOINTMENT_REASONS),
+   396→      notes: status === "completed" ? pick(P.APPOINTMENT_NOTES) : "",
+   397→      prescription: status === "completed" && bool(0.6) ? pick(P.PRESCRIPTIONS) : undefined,
+   398→      createdAtISO: randDateTime(subDaysISO(dateISO, int(1, 14)), 9, 21),
+   399→      isDemo: doctor.isDemo || patient.isDemo || undefined,
+   400→    };
+   401→    appointments.push(a);
+   402→    return a;
+   403→  }
+   404→
+   405→  // main doctor: dense past + today + future appointments
+   406→  const mainPastDates: string[] = [];
+   407→  for (let back = 180; back >= 1; back--) {
+   408→    const dateISO = subDaysISO(today, back);
+   409→    if (isDoctorWorking(mainDoctor, dateISO) && bool(0.55)) mainPastDates.push(dateISO);
+   410→  }
+   411→  const usedSlotsKey = new Set<string>();
+   412→  const otherPatients = patients.slice(1);
+   413→
+   414→  for (const dateISO of mainPastDates) {
+   415→    const slots = generateSlotsForDate(mainDoctor, dateISO, appointments);
+   416→    const slotsCount = Math.min(slots.length, int(1, 3));
+   417→    const chosen = fakerFA.helpers.arrayElements(slots, slotsCount);
+   418→    for (const slot of chosen) {
+   419→      const key = `${dateISO}|${slot.time}`;
+   420→      if (usedSlotsKey.has(key)) continue;
+   421→      usedSlotsKey.add(key);
+   422→      const patient = pick(otherPatients);
+   423→      const roll = int(1, 100);
+   424→      const status: AppointmentStatus = roll <= 78 ? "completed" : roll <= 88 ? "cancelled" : roll <= 96 ? "no-show" : "completed";
+   425→      const visitType: VisitType = slot.visitType === "online" ? pick(["video", "text", "phone"] as VisitType[]) : "in-person";
+   426→      addAppointment(mainDoctor, patient, dateISO, slot.time, status, visitType);
+   427→    }
+   428→  }
+   429→
+   430→  // today's appointments for the main doctor (via override hours)
+   431→  {
+   432→    const todaySlots = generateSlotsForDate(mainDoctor, today, appointments);
+   433→    const morning = todaySlots.slice(0, Math.min(3, todaySlots.length));
+   434→    const evening = todaySlots.slice(3, 8);
+   435→    morning.forEach((slot, i) => {
+   436→      addAppointment(mainDoctor, pick(otherPatients), today, slot.time, i < 2 ? "completed" : "confirmed", "in-person");
+   437→    });
+   438→    evening.slice(0, 3).forEach((slot) => {
+   439→      addAppointment(mainDoctor, pick(otherPatients), today, slot.time, bool(0.6) ? "confirmed" : "pending", "in-person");
+   440→    });
+   441→  }
+   442→
+   443→  // upcoming 30 days for main doctor
+   444→  for (let fwd = 1; fwd <= 30; fwd++) {
+   445→    const dateISO = addDaysISO(today, fwd);
+   446→    if (!isDoctorWorking(mainDoctor, dateISO) || !bool(0.7)) continue;
+   447→    const slots = generateSlotsForDate(mainDoctor, dateISO, appointments);
+   448→    const chosen = fakerFA.helpers.arrayElements(slots, int(0, 3));
+   449→    for (const slot of chosen) {
+   450→      const key = `${dateISO}|${slot.time}`;
+   451→      if (usedSlotsKey.has(key)) continue;
+   452→      usedSlotsKey.add(key);
+   453→      const roll = int(1, 100);
+   454→      addAppointment(mainDoctor, pick(otherPatients), dateISO, slot.time, roll <= 60 ? "confirmed" : "pending", slot.visitType === "online" ? "video" : "in-person");
+   455→    }
+   456→  }
+   457→
+   458→  // main patient: personal history across doctors + upcoming
+   459→  {
+   460→    const heartDoc = doctors.find((d) => d.specialtyId === "cardio")!;
+   461→    const pedsDoc = doctors.find((d) => d.specialtyId === "peds")!;
+   462→    const nutriDoc = doctors.find((d) => d.specialtyId === "nutrition")!;
+   463→    // yesterday completed visit with main doctor (review prompt)
+   464→    let yesterday = subDaysISO(today, 1);
+   465→    while (!isDoctorWorking(mainDoctor, yesterday)) yesterday = subDaysISO(yesterday, 1);
+   466→    addAppointment(mainDoctor, mainPatient, yesterday, "10:00", "completed", "in-person", { reason: "پیگیری درمان جوشگاه" });
+   467→    // upcoming confirmed tomorrow at 10:00
+   468→    let tomorrow = addDaysISO(today, 1);
+   469→    while (!isDoctorWorking(mainDoctor, tomorrow)) tomorrow = addDaysISO(tomorrow, 1);
+   470→    addAppointment(mainDoctor, mainPatient, tomorrow, "10:00", "confirmed", "in-person", { reason: "بررسی تکمیل درمان" });
+   471→    // pending with cardio doctor in 5 days
+   472→    addAppointment(heartDoc, mainPatient, addDaysISO(today, 5), "12:30", "pending", "in-person", { reason: "کنترل فشار خون" });
+   473→    // completed visit for the son (family member booking demo)
+   474→    const son = mainPatient.family[1];
+   475→    addAppointment(pedsDoc, mainPatient, subDaysISO(today, 20), "09:30", "completed", "in-person", { reason: "واکسیناسیون کودک", forFamilyMember: son });
+   476→    // a cancelled one
+   477→    addAppointment(nutriDoc, mainPatient, subDaysISO(today, 12), "16:00", "cancelled", "in-person", { reason: "مشاوره رژیم غذایی" });
+   478→    // history with main doctor
+   479→    for (const back of [25, 42, 70, 95, 120, 160, 200]) {
+   480→      let d = subDaysISO(today, back);
+   481→      while (!isDoctorWorking(mainDoctor, d)) d = subDaysISO(d, 1);
+   482→      addAppointment(mainDoctor, mainPatient, d, pick(["09:00", "09:15", "10:30", "11:45"]), "completed", "in-person");
+   483→    }
+   484→  }
+   485→
+   486→  // other active doctors: past + a few upcoming
+   487→  for (const doctor of activeDoctors) {
+   488→    if (doctor.id === mainDoctor.id) continue;
+   489→    let count = 0;
+   490→    for (let back = 180; back >= 1 && count < 17; back -= 2) {
+   491→      const dateISO = subDaysISO(today, back);
+   492→      if (!isDoctorWorking(doctor, dateISO) || !bool(0.5)) continue;
+   493→      count++;
+   494→      const roll = int(1, 100);
+   495→      const status: AppointmentStatus = roll <= 82 ? "completed" : roll <= 91 ? "cancelled" : "no-show";
+   496→      addAppointment(doctor, pick(patients), dateISO, randTime(), status, bool(0.12) ? "video" : "in-person");
+   497→    }
+   498→    // a couple of upcoming
+   499→    for (const fwd of [2, 4, 7, 11, 15, 21, 26]) {
+   500→      if (!bool(0.45)) continue;
+   501→      const dateISO = addDaysISO(today, fwd);
+   502→      if (!isDoctorWorking(doctor, dateISO)) continue;
+   503→      addAppointment(doctor, pick(patients), dateISO, randTime(), bool(0.65) ? "confirmed" : "pending", bool(0.15) ? "video" : "in-person");
+   504→    }
+   505→  }
+   506→
+   507→  /* --------------------------- consultations ------------------------ */
+   508→
+   509→  const consultations: Consultation[] = [];
+   510→  const onlineDoctors = activeDoctors.filter((d) => d.availableOnline);
+   511→
+   512→  function addConsultation(
+   513→    doctor: Doctor,
+   514→    patient: Patient,
+   515→    status: Consultation["status"],
+   516→    type: Consultation["type"],
+   517→    createdDaysAgo: number,
+   518→    deadlineHours = 24
+   519→  ): Consultation {
+   520→    const createdAtISO = randDateTime(subDaysISO(today, createdDaysAgo), 9, 21);
+   521→    const deadlineISO = plusHours(createdAtISO, deadlineHours);
+   522→    const messages: Consultation["messages"] = [
+   523→      {
+   524→        id: nid("msg"),
+   525→        sender: "patient",
+   526→        text: `${pick(P.CONSULT_SUBJECTS)}\n${pick(P.CONSULT_QUESTIONS)}`,
+   527→        attachments: bool(0.25) ? [{ name: "report.jpg", sizeKB: int(120, 900), type: "image" as const }] : [],
+   528→        sentAtISO: createdAtISO,
+   529→      },
+   530→    ];
+   531→    if (status === "answered" || status === "closed") {
+   532→      messages.push({
+   533→        id: nid("msg"),
+   534→        sender: "doctor",
+   535→        text: pick(P.CONSULT_ANSWERS),
+   536→        attachments: [],
+   537→        sentAtISO: randDateTime(subDaysISO(today, Math.max(0, createdDaysAgo - 1)), 8, 22),
+   538→      });
+   539→      if (bool(0.5)) {
+   540→        messages.push({
+   541→          id: nid("msg"),
+   542→          sender: "patient",
+   543→          text: pick(P.CONSULT_FOLLOWUPS),
+   544→          attachments: [],
+   545→          sentAtISO: randDateTime(subDaysISO(today, Math.max(0, createdDaysAgo - 1)), 8, 22),
+   546→        });
+   547→        if (bool(0.4)) {
+   548→          messages.push({
+   549→            id: nid("msg"),
+   550→            sender: "doctor",
+   551→            text: pick(P.CONSULT_ANSWERS),
+   552→            attachments: [],
+   553→            sentAtISO: randDateTime(subDaysISO(today, Math.max(0, createdDaysAgo - 2)), 8, 22),
+   554→          });
+   555→        }
+   556→      }
+   557→    }
+   558→    const fee = type === "text" ? doctor.textFee : type === "phone" ? doctor.phoneFee : doctor.videoFee;
+   559→    const c: Consultation = {
+   560→      id: nid("con"),
+   561→      code: code("CO"),
+   562→      doctorId: doctor.id,
+   563→      patientId: patient.id,
+   564→      type,
+   565→      status,
+   566→      subject: pick(P.CONSULT_SUBJECTS),
+   567→      question: pick(P.CONSULT_QUESTIONS),
+   568→      messages,
+   569→      fee,
+   570→      paymentStatus: "paid",
+   571→      createdAtISO,
+   572→      deadlineISO,
+   573→      prescriptionNote: status === "closed" && bool(0.5) ? pick(P.PRESCRIPTIONS) : undefined,
+   574→      isDemo: doctor.isDemo || patient.isDemo || undefined,
+   575→    };
+   576→    consultations.push(c);
+   577→    return c;
+   578→  }
+   579→
+   580→  // main doctor consultations
+   581→  for (let i = 0; i < 16; i++) addConsultation(mainDoctor, pick(otherPatients), "answered", pick(["text", "text", "video", "phone"] as const), int(2, 30));
+   582→  // waiting ones (2 overdue, 6 normal)
+   583→  for (let i = 0; i < 2; i++) addConsultation(mainDoctor, pick(otherPatients), "waiting", "text", 2, -2); // overdue
+   584→  for (let i = 0; i < 6; i++) addConsultation(mainDoctor, pick(otherPatients), "waiting", pick(["text", "video"] as const), 0, 18);
+   585→  for (let i = 0; i < 8; i++) addConsultation(mainDoctor, pick(otherPatients), "closed", pick(["text", "phone", "video"] as const), int(20, 90));
+   586→
+   587→  // main patient consultations
+   588→  addConsultation(mainDoctor, mainPatient, "answered", "text", 3);
+   589→  addConsultation(mainDoctor, mainPatient, "waiting", "text", 0, 20);
+   590→  addConsultation(mainDoctor, mainPatient, "closed", "video", 30);
+   591→  addConsultation(pick(onlineDoctors), mainPatient, "answered", "phone", 10);
+   592→  addConsultation(pick(onlineDoctors), mainPatient, "waiting", "text", 1);
+   593→
+   594→  // others
+   595→  for (let i = 0; i < 175; i++) {
+   596→    const doctor = pick(onlineDoctors);
+   597→    const status = pick(["answered", "answered", "waiting", "closed", "answered", "closed", "waiting"] as const);
+   598→    addConsultation(doctor, pick(otherPatients), status, pick(["text", "text", "text", "video", "phone"] as const), int(1, 150));
+   599→  }
+   600→
+   601→  /* ------------------------------- reviews --------------------------- */
+   602→
+   603→  const reviews: Review[] = [];
+   604→  const completedForMain = appointments.filter((a) => a.doctorId === mainDoctor.id && a.status === "completed");
+   605→  fakerFA.helpers
+   606→    .arrayElements(completedForMain, Math.min(24, completedForMain.length))
+   607→    .forEach((a) => {
+   608→      reviews.push({
+   609→        id: nid("rev"),
+   610→        doctorId: mainDoctor.id,
+   611→        patientId: a.patientId,
+   612→        appointmentId: a.id,
+   613→        rating: pick([5, 5, 5, 5, 5, 4, 4, 4, 4, 3, 5, 2, 5, 4, 5, 3, 5, 4, 5, 5, 4, 5, 5, 4]),
+   614→        comment: pick(P.REVIEW_COMMENTS),
+   615→        reply: bool(0.4) ? pick(P.REVIEW_REPLIES) : undefined,
+   616→        status: "published",
+   617→        createdAtISO: randDateTime(a.date, 10, 21),
+   618→      });
+   619→    });
+   620→
+   621→  for (const doctor of doctors) {
+   622→    if (doctor.id === mainDoctor.id) continue;
+   623→    const completed = appointments.filter((a) => a.doctorId === doctor.id && a.status === "completed");
+   624→    const chosen = fakerFA.helpers.arrayElements(completed, Math.min(5, completed.length));
+   625→    for (const a of chosen) {
+   626→      const roll = int(1, 100);
+   627→      const status = roll <= 88 ? "published" : roll <= 94 ? "pending" : "hidden";
+   628→      reviews.push({
+   629→        id: nid("rev"),
+   630→        doctorId: doctor.id,
+   631→        patientId: a.patientId,
+   632→        appointmentId: a.id,
+   633→        rating: pick([5, 5, 5, 4, 4, 4, 4, 3, 5, 2]),
+   634→        comment: pick(P.REVIEW_COMMENTS),
+   635→        reply: bool(0.3) ? pick(P.REVIEW_REPLIES) : undefined,
+   636→        status: status as Review["status"],
+   637→        createdAtISO: randDateTime(a.date, 10, 21),
+   638→      });
+   639→    }
+   640→  }
+   641→
+   642→  // sync doctor rating/reviewCount with seeded reviews (consistency!)
+   643→  for (const doctor of doctors) {
+   644→    const docsReviews = reviews.filter((r) => r.doctorId === doctor.id);
+   645→    doctor.reviewCount = docsReviews.length;
+   646→    doctor.rating = docsReviews.length
+   647→      ? Math.round((docsReviews.reduce((s, r) => s + r.rating, 0) / docsReviews.length) * 10) / 10
+   648→      : 4.5;
+   649→  }
+   650→
+   651→  /* ----------------------------- lab orders -------------------------- */
+   652→
+   653→  const labOrders: LabOrder[] = [];
+   654→  function addLabOrder(patient: Patient, statusIndex: number, daysAgo: number): void {
+   655→    const tests = fakerFA.helpers.arrayElements(LAB_TESTS, int(1, 4)).map((t) => ({ id: t.id, name: t.name, price: t.price }));
+   656→    const totalFee = tests.reduce((s, t) => s + t.price, 0);
+   657→    const lab = pick(labCenters);
+   658→    const createdAt = randDateTime(subDaysISO(today, daysAgo), 8, 20);
+   659→    const status = LAB_ORDER_STEPS[statusIndex];
+   660→    const history: LabOrder["history"] = [];
+   661→    for (let s = 0; s <= statusIndex; s++) {
+   662→      history.push({ status: LAB_ORDER_STEPS[s], atISO: s === 0 ? createdAt : randDateTime(subDaysISO(today, Math.max(0, daysAgo - s * 2)), 8, 20) });
+   663→    }
+   664→    labOrders.push({
+   665→      id: nid("lab"),
+   666→      code: code("LB"),
+   667→      patientId: patient.id,
+   668→      labId: lab.id,
+   669→      doctorId: bool(0.5) ? mainDoctor.id : pick(doctors).id,
+   670→      tests,
+   671→      totalFee,
+   672→      status,
+   673→      paymentStatus: statusIndex >= 2 ? "paid" : "unpaid",
+   674→      prescriptionFile: bool(0.4) ? { name: "نسخه آزمایش.pdf", sizeKB: int(100, 600), type: "pdf" } : undefined,
+   675→      homeSampling: bool(0.35),
+   676→      history,
+   677→      createdAtISO: createdAt,
+   678→      resultNote: status === "received" ? "همه مقادیر در محدوده نرمال هستند؛ نتیجه تفصیلی در فایل PDF پیوست است." : undefined,
+   679→      isDemo: patient.isDemo || undefined,
+   680→    });
+   681→  }
+   682→
+   683→  // main patient: one order at each step
+   684→  addLabOrder(mainPatient, 5, 6); // received
+   685→  addLabOrder(mainPatient, 4, 2); // processing
+   686→  addLabOrder(mainPatient, 3, 1); // sampling
+   687→  addLabOrder(mainPatient, 2, 1); // paid
+   688→  addLabOrder(mainPatient, 1, 0); // review
+   689→  addLabOrder(mainPatient, 0, 0); // registered
+   690→  for (let i = 0; i < 74; i++) {
+   691→    addLabOrder(pick(patients), int(0, 5), int(1, 45));
+   692→  }
+   693→
+   694→  /* ---------------------------- transactions ------------------------ */
+   695→
+   696→  const transactions: Transaction[] = [];
+   697→  for (const a of appointments) {
+   698→    if (a.paymentStatus !== "paid") continue;
+   699→    transactions.push({
+   700→      id: nid("trx"),
+   701→      code: code("TR"),
+   702→      kind: a.visitType === "in-person" ? "appointment" : "consultation",
+   703→      amount: a.fee,
+   704→      direction: "in",
+   705→      patientId: a.patientId,
+   706→      doctorId: a.doctorId,
+   707→      appointmentId: a.id,
+   708→      status: "success",
+   709→      description: `پرداخت نوبت ${a.code} — ${a.visitType === "in-person" ? "ویزیت حضوری" : "ویزیت آنلاین"}`,
+   710→      createdAtISO: randDateTime(a.date, 9, 21),
+   711→    });
+   712→  }
+   713→  for (const c of consultations) {
+   714→    transactions.push({
+   715→      id: nid("trx"),
+   716→      code: code("TR"),
+   717→      kind: "consultation",
+   718→      amount: c.fee,
+   719→      direction: "in",
+   720→      patientId: c.patientId,
+   721→      doctorId: c.doctorId,
+   722→      consultationId: c.id,
+   723→      status: "success",
+   724→      description: `پرداخت مشاوره ${c.code}`,
+   725→      createdAtISO: c.createdAtISO,
+   726→    });
+   727→  }
+   728→  for (const l of labOrders) {
+   729→    if (l.paymentStatus !== "paid") continue;
+   730→    transactions.push({
+   731→      id: nid("trx"),
+   732→      code: code("TR"),
+   733→      kind: "lab",
+   734→      amount: l.totalFee,
+   735→      direction: "in",
+   736→      patientId: l.patientId,
+   737→      labOrderId: l.id,
+   738→      status: "success",
+   739→      description: `پرداخت آزمایش ${l.code}`,
+   740→      createdAtISO: l.history[Math.min(2, l.history.length - 1)].atISO,
+   741→    });
+   742→  }
+   743→  // topups
+   744→  for (const p of fakerFA.helpers.arrayElements(patients, 55)) {
+   745→    transactions.push({
+   746→      id: nid("trx"),
+   747→      code: code("TR"),
+   748→      kind: "topup",
+   749→      amount: int(1, 20) * 100_000,
+   750→      direction: "in",
+   751→      patientId: p.id,
+   752→      status: "success",
+   753→      description: "شارژ کیف پول",
+   754→      createdAtISO: randDateTime(subDaysISO(today, int(1, 170)), 8, 22),
+   755→    });
+   756→  }
+   757→  // refunds for some cancelled+refunded appointments
+   758→  for (const a of appointments) {
+   759→    if (a.status === "cancelled" && a.paymentStatus === "refunded" && bool(0.7)) {
+   760→      transactions.push({
+   761→        id: nid("trx"),
+   762→        code: code("TR"),
+   763→        kind: "refund",
+   764→        amount: a.fee,
+   765→        direction: "out",
+   766→        patientId: a.patientId,
+   767→        doctorId: a.doctorId,
+   768→        appointmentId: a.id,
+   769→        status: "success",
+   770→        description: `بازگشت وجه نوبت لغوشده ${a.code}`,
+   771→        createdAtISO: randDateTime(a.date, 9, 21),
+   772→      });
+   773→    }
+   774→  }
+   775→
+   776→  /* ---------------------------- settlements -------------------------- */
+   777→
+   778→  const settlements: Settlement[] = [];
+   779→  const bankNames = ["بانک ملت", "بانک سامان", "بانک پارسیان", "بانک صادرات", "بانک ملی"];
+   780→  function doctorEarnings(d: Doctor): number {
+   781→    return transactions
+   782→      .filter((t) => t.doctorId === d.id && t.kind === "appointment" || t.kind === "consultation" && t.doctorId === d.id)
+   783→      .reduce((s, t) => s + Math.round(t.amount * (1 - d.commissionRate / 100)), 0);
+   784→  }
+   785→  function addSettlement(doctor: Doctor, status: Settlement["status"], daysAgo: number, ratio = 0.15): void {
+   786→    const amount = Math.max(500_000, Math.round(doctorEarnings(doctor) * ratio));
+   787→    const s: Settlement = {
+   788→      id: nid("stl"),
+   789→      code: code("ST"),
+   790→      doctorId: doctor.id,
+   791→      amount,
+   792→      status,
+   793→      requestedAtISO: randDateTime(subDaysISO(today, daysAgo), 9, 18),
+   794→      paidAtISO: status === "paid" ? randDateTime(subDaysISO(today, Math.max(1, daysAgo - 3)), 10, 16) : undefined,
+   795→      bankName: pick(bankNames),
+   796→      iban: `IR${String(int(10, 99))}${String(int(100000000000, 999999999999))}0${int(100, 999)}`,
+   797→      note: status === "rejected" ? "مغایرت در اطلاعات حساب بانکی — لطفاً شماره شبا را اصلاح کنید" : undefined,
+   798→    };
+   799→    settlements.push(s);
+   800→    if (status === "paid") {
+   801→      transactions.push({
+   802→        id: nid("trx"),
+   803→        code: code("TR"),
+   804→        kind: "settlement",
+   805→        amount,
+   806→        direction: "out",
+   807→        doctorId: doctor.id,
+   808→        settlementId: s.id,
+   809→        status: "success",
+   810→        description: `تسویه حساب ${s.code}`,
+   811→        createdAtISO: s.paidAtISO!,
+   812→      });
+   813→    }
+   814→  }
+   815→
+   816→  addSettlement(mainDoctor, "pending", 1, 0.1);
+   817→  addSettlement(mainDoctor, "paid", 35, 0.2);
+   818→  addSettlement(mainDoctor, "approved", 3, 0.08);
+   819→  for (const doctor of fakerFA.helpers.arrayElements(activeDoctors.filter((d) => d.id !== mainDoctor.id), 12)) {
+   820→    addSettlement(doctor, pick(["pending", "paid", "approved", "paid", "rejected"] as Settlement["status"][]), int(2, 60), 0.2);
+   821→  }
+   822→
+   823→  /* ------------------------------ staff ------------------------------ */
+   824→
+   825→  const PERMISSION_KEYS = [
+   826→    "dashboard", "doctors", "patients", "appointments", "centers", "services", "finance",
+   827→    "discounts", "reviews", "content", "banners", "support", "staff", "audit", "settings",
+   828→  ];
+   829→  const allPerms = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, true]));
+   830→  const supportPerms = Object.fromEntries(PERMISSION_KEYS.map((k) => [k, k === "support" || k === "dashboard"]));
+   831→  const staff: DbSeed["staff"] = [
+   832→    { id: "stf-0001", name: "محمد کریمی", role: "admin", email: "admin@doktorha.ir", avatarHue: 258, active: true, permissions: allPerms },
+   833→    { id: "stf-0002", name: "نگار حسینی", role: "support", email: "support1@doktorha.ir", avatarHue: 330, active: true, permissions: supportPerms },
+   834→    { id: "stf-0003", name: "مریم صابری", role: "support", email: "support2@doktorha.ir", avatarHue: 28, active: true, permissions: supportPerms },
+   835→    { id: "stf-0004", name: "حسین دلاوری", role: "support", email: "support3@doktorha.ir", avatarHue: 200, active: false, permissions: supportPerms },
+   836→    { id: "stf-0005", name: "زهرا رحیمی", role: "admin", email: "admin2@doktorha.ir", avatarHue: 100, active: true, permissions: { ...allPerms, settings: false, staff: false } },
+   837→  ];
+   838→
+   839→  /* ------------------------------ tickets ---------------------------- */
+   840→
+   841→  const tickets: Ticket[] = [];
+   842→  const supportAgents = staff.filter((s) => s.role === "support" && s.active);
+   843→  const ticketCategories = Object.keys(P.TICKET_SUBJECTS);
+   844→  type TicketMessageT = Ticket["messages"][number];
+   845→
+   846→  function addTicket(opts: {
+   847→    creatorId: string;
+   848→    creatorRole: "patient" | "doctor";
+   849→    creatorName: string;
+   850→    category: TicketCategory;
+   851→    priority: TicketPriority;
+   852→    status: TicketStatus;
+   853→    daysAgo: number;
+   854→    body?: string;
+   855→    relatedEntity?: [Ticket["relatedEntityType"], string | undefined];
+   856→  }): Ticket {
+   857→    const createdAtISO = randDateTime(subDaysISO(today, opts.daysAgo), 8, 22);
+   858→    const subject = pick(P.TICKET_SUBJECTS[opts.category]);
+   859→    const messages: TicketMessageT[] = [
+   860→      {
+   861→        id: nid("tmsg"),
+   862→        senderId: opts.creatorId,
+   863→        senderRole: opts.creatorRole,
+   864→        senderName: opts.creatorName,
+   865→        text: opts.body ?? P.TICKET_BODIES[opts.category]
+   866→          .replace("{doctor}", mainDoctor.name)
+   867→          .replace("{code}", `NO-${int(10000, 99999)}`),
+   868→        internal: false,
+   869→        attachments: [],
+   870→        sentAtISO: createdAtISO,
+   871→      },
+   872→    ];
+   873→    let firstResponseAtISO: string | undefined;
+   874→    let resolvedAtISO: string | undefined;
+   875→    if (opts.status !== "open") {
+   876→      firstResponseAtISO = plusHours(createdAtISO, int(1, 8));
+   877→      messages.push({
+   878→        id: nid("tmsg"),
+   879→        senderId: supportAgents[0].id,
+   880→        senderRole: "support",
+   881→        senderName: supportAgents[0].name,
+   882→        text: pick(P.TICKET_SUPPORT_REPLIES),
+   883→        internal: false,
+   884→        attachments: [],
+   885→        sentAtISO: firstResponseAtISO,
+   886→      });
+   887→      if (bool(0.5)) {
+   888→        messages.push({
+   889→          id: nid("tmsg"),
+   890→          senderId: opts.creatorId,
+   891→          senderRole: opts.creatorRole,
+   892→          senderName: opts.creatorName,
+   893→          text: pick(P.TICKET_USER_REPLIES),
+   894→          internal: false,
+   895→          attachments: [],
+   896→          sentAtISO: plusHours(firstResponseAtISO, int(2, 12)),
+   897→        });
+   898→        if (bool(0.4)) {
+   899→          messages.push({
+   900→            id: nid("tmsg"),
+   901→            senderId: supportAgents[0].id,
+   902→            senderRole: "support",
+   903→            senderName: supportAgents[0].name,
+   904→            text: pick(P.TICKET_SUPPORT_REPLIES),
+   905→            internal: false,
+   906→            attachments: [],
+   907→            sentAtISO: plusHours(firstResponseAtISO, int(4, 20)),
+   908→          });
+   909→        }
+   910→      }
+   911→      if (bool(0.4)) {
+   912→        messages.push({
+   913→          id: nid("tmsg"),
+   914→          senderId: supportAgents[0].id,
+   915→          senderRole: "support",
+   916→          senderName: supportAgents[0].name,
+   917→          text: pick(P.INTERNAL_NOTES),
+   918→          internal: true,
+   919→          attachments: [],
+   920→          sentAtISO: plusHours(firstResponseAtISO, int(1, 4)),
+   921→        });
+   922→      }
+   923→    }
+   924→    if (opts.status === "closed") {
+   925→      resolvedAtISO = plusHours(messages[messages.length - 1].sentAtISO, int(3, 30));
+   926→    }
+   927→    const t: Ticket = {
+   928→      id: nid("tkt"),
+   929→      code: code("TK"),
+   930→      subject,
+   931→      creatorId: opts.creatorId,
+   932→      creatorRole: opts.creatorRole,
+   933→      creatorName: opts.creatorName,
+   934→      category: opts.category,
+   935→      priority: opts.priority,
+   936→      status: opts.status,
+   937→      messages,
+   938→      assignedAgentId: opts.status === "open" && bool(0.4) ? undefined : pick(supportAgents).id,
+   939→      relatedEntityType: opts.relatedEntity?.[0],
+   940→      relatedEntityId: opts.relatedEntity?.[1],
+   941→      createdAtISO,
+   942→      updatedAtISO: messages[messages.length - 1].sentAtISO,
+   943→      firstResponseAtISO,
+   944→      resolvedAtISO,
+   945→      rating: opts.status === "closed" ? pick([5, 5, 4, 5, 4, 3]) : undefined,
+   946→      ratingComment: opts.status === "closed" && bool(0.4) ? "پاسخ سریع و حل کامل مشکل. ممنون از تیم پشتیبانی." : undefined,
+   947→      isDemo: opts.creatorId === mainPatient.id || opts.creatorId === mainDoctor.id || undefined,
+   948→    };
+   949→    tickets.push(t);
+   950→    return t;
+   951→  }
+   952→
+   953→  const cat = (c: string) => c as TicketCategory;
+   954→
+   955→  // main patient & main doctor tickets
+   956→  addTicket({ creatorId: mainPatient.id, creatorRole: "patient", creatorName: mainPatient.name, category: cat("payment"), priority: "high", status: "answered", daysAgo: 0, body: "سلام، مبلغ نوبت پرداخت شد ولی همچنان در بخش پرداخت‌های من وضعیت «در انتظار» است. لطفاً بررسی کنید." });
+   957→  addTicket({ creatorId: mainPatient.id, creatorRole: "patient", creatorName: mainPatient.name, category: cat("lab"), priority: "medium", status: "closed", daysAgo: 8, relatedEntity: ["lab-order", labOrders.find((l) => l.patientId === mainPatient.id && l.status === "received")?.id] });
+   958→  addTicket({ creatorId: mainPatient.id, creatorRole: "patient", creatorName: mainPatient.name, category: cat("booking"), priority: "low", status: "open", daysAgo: 0, body: "سلام، امکان انتخاب نوبت حضوری بعد از ساعت ۱۸ برای دکتر سارا محمدی میشه اضافه بشه؟" });
+   959→  addTicket({ creatorId: mainPatient.id, creatorRole: "patient", creatorName: mainPatient.name, category: cat("technical"), priority: "medium", status: "in-progress", daysAgo: 1 });
+   960→  addTicket({ creatorId: mainDoctor.id, creatorRole: "doctor", creatorName: mainDoctor.name, category: cat("payment"), priority: "high", status: "in-progress", daysAgo: 0, body: "سلام، درخواست تسویه دو روز پیش ثبت شده و هنوز بررسی نشده. لطفاً پیگیری شود." });
+   961→  addTicket({ creatorId: mainDoctor.id, creatorRole: "doctor", creatorName: mainDoctor.name, category: cat("technical"), priority: "medium", status: "answered", daysAgo: 3, body: "در تقویم نوبت‌ها، روز چهارشنبه ساعت ۱۱ به بعد نمایش داده نمی‌شود." });
+   962→
+   963→  // general population
+   964→  const statusesPlan: TicketStatus[] = [
+   965→    ...Array(12).fill("open"), ...Array(9).fill("in-progress"), ...Array(8).fill("awaiting-user"),
+   966→    ...Array(13).fill("answered"), ...Array(12).fill("closed"),
+   967→  ];
+   968→  const priorities: TicketPriority[] = ["low", "medium", "medium", "high", "medium", "urgent", "high", "low", "medium"];
+   969→  for (const status of statusesPlan) {
+   970→    const fromDoctor = bool(0.35);
+   971→    const creator = fromDoctor ? pick(doctors) : pick(patients);
+   972→    addTicket({
+   973→      creatorId: creator.id,
+   974→      creatorRole: fromDoctor ? "doctor" : "patient",
+   975→      creatorName: creator.name,
+   976→      category: cat(pick(ticketCategories)),
+   977→      priority: pick(priorities),
+   978→      status,
+   979→      daysAgo: int(0, 40),
+   980→    });
+   981→  }
+   982→  // some overdue open tickets for SLA highlighting
+   983→  for (let i = 0; i < 4; i++) {
+   984→    const fromDoctor = bool(0.4);
+   985→    const creator = fromDoctor ? pick(doctors) : pick(patients);
+   986→    addTicket({
+   987→      creatorId: creator.id,
+   988→      creatorRole: fromDoctor ? "doctor" : "patient",
+   989→      creatorName: creator.name,
+   990→      category: cat(pick(ticketCategories)),
+   991→      priority: "urgent",
+   992→      status: "open",
+   993→      daysAgo: int(2, 5),
+   994→    });
+   995→  }
+   996→
+   997→  /* ---------------------------- canned/faq --------------------------- */
+   998→
+   999→  const cannedReplies: DbSeed["cannedReplies"] = P.CAN_REPLIES.map((r, i) => ({ id: `crl-${i + 1}`, ...r }));
+  1000→  const faqs: DbSeed["faqs"] = P.FAQ_ITEMS.map((f, i) => ({
+  1001→    id: `faq-${i + 1}`,
+  1002→    question: f.q,
+  1003→    answer: f.a,
+  1004→    category: i < 2 ? "booking" : i === 2 ? "consult" : i === 3 ? "lab" : i === 4 ? "payment" : i === 5 ? "booking" : i === 6 ? "other" : "technical",
+  1005→    published: true,
+  1006→    order: i + 1,
+  1007→  }));
+  1008→
+  1009→  /* ----------------------------- articles ---------------------------- */
+  1010→
+  1011→  const mkArticle = (
+  1012→    i: number,
+  1013→    title: string,
+  1014→    category: string,
+  1015→    excerpt: string,
+  1016→    body: string,
+  1017→    tags: string[],
+  1018→    status: "published" | "draft",
+  1019→    readMinutes: number
+  1020→  ): DbSeed["articles"][number] => ({
+  1021→    id: `art-${i}`,
+  1022→    title,
+  1023→    slug: `mag-${i}`,
+  1024→    category,
+  1025→    excerpt,
+  1026→    body,
+  1027→    authorName: i === 1 ? mainDoctor.name : "تحریریه دکترها",
+  1028→    doctorId: i === 1 ? mainDoctor.id : undefined,
+  1029→    coverHue: (i * 47) % 360,
+  1030→    status,
+  1031→    publishedAtISO: `${subDaysISO(today, i * 6 + 3)}T10:00:00`,
+  1032→    readMinutes,
+  1033→    views: int(350, 12400),
+  1034→    tags,
+  1035→  });
+  1036→
+  1037→  const articles: DbSeed["articles"] = [
+  1038→    mkArticle(1, "راهنمای مراقبت از پوست در فصل سرد", "پوست و مو",
+  1039→      "سرما و بادهای زمستانی سد دفاعی پوست را تضعیف می‌کنند؛ با این چند توصیه ساده پوست خود را حفظ کنید.",
+  1040→      "با فرا رسیدن ماه‌های سرد، بسیاری از ما با خشکی پوست، قرمزی و خارش روبه‌رو می‌شویم. دلیل اصلی این مشکل، کاهش رطوبت هوا و آسیب سد چربی طبیعی پوست است.\n\nاولین توصیه، استفاده روزانه از مرطوب‌کننده‌های بدون عطر است. کرم‌های حاوی سرامید و گلیسرین سد پوستی را بازسازی می‌کنند و بهترین زمان مصرف، بلافاصله بعد از حمام است. دومین نکته، پرهیز از آب داغ است؛ آب ولرم رطوبت پوست را کمتر تخلیه می‌کند.\n\nاستفاده از ضدآفتاب در زمستان را فراموش نکنید؛ اشعه UVA در روزهای ابری هم فعال است و لک‌ها را تشدید می‌کند. اگر پوست شما مستعد اگزما است، از شوینده‌های ملایم و فاقد سولفات استفاده کنید و هومیدیفایر (رطوبت‌ساز) در اتاق خواب داشته باشید.\n\nدر صورت بروز ترک، خونریزی یا خارش شدید که با مراقبت خانگی بهبود نمی‌یابد، معاینه توسط متخصص پوست توصیه می‌شود.",
+  1041→      ["پوست", "مراقبت", "زمستان"], "published", 4),
+  1042→    mkArticle(2, "۱۰ توصیه تغذیه‌ای برای کنترل قند خون", "تغذیه",
+  1043→      "رژیم غذایی مناسب می‌تواند قند خون را بدون افزایش دارو در محدوده سالم نگه دارد.",
+  1044→      "کنترل قند خون تنها با دارو ممکن نیست؛ الگوی غذایی نقشی تعیین‌کننده دارد. اول، وعده‌های اصلی را حذف نکنید و آن‌ها را به ۵ وعده کوچک تقسیم کنید تا قند خون نوسان کمتری داشته باشد.\n\nدوم، الیاف را افزایش دهید؛ سبزیجات، حبوبات و جو دوسر جذب قند را کند می‌کنند. سوم، نان سفید و برنج سفید را با نان سبوس‌دار و برنج قهوه‌ای جایگزین کنید.\n\nنوشیدنی‌های شیرین را حذف کنید و به‌جای آبمیوه، میوه کامل با الیاف مصرف کنید. مصرف پروتئین کم‌چرب در هر وعده، سیری طولانی‌تری ایجاد می‌کند. در نهایت، پیگیری منظم قند ناشتا و مشاوره با پزشک متخصص تغذیه یا غدد، برنامه را شخصی‌سازی می‌کند.",
+  1045→      ["دیابت", "تغذیه", "قند خون"], "published", 5),
+  1046→    mkArticle(3, "فشار خون بالا؛ قاتل خاموش را جدی بگیریم", "سلامت قلب",
+  1047→      "فشار خون بالا سال‌ها بدون علامت است اما خطر سکته و نارسایی قلبی را چند برابر می‌کند.",
+  1048→      "فشار خون بالا به «قاتل خاموش» معروف است؛ چون اغلب تا زمان بروز عارضه جدی، علامتی ندارد. حدود یک‌سوم بزرگسالان به آن مبتلا هستند و بسیاری از آن بی‌خبرند.\n\nکاهش مصرف نمک به کمتر از ۵ گرم در روز، پیاده‌روی ۳۰ دقیقه‌ای روزانه، ترک سیگار و کنترل وزن، چهار ستون پیشگیری هستند. قهوه و انرژی‌زاها فشار لحظه‌ای را بالا می‌برند؛ مصرف آن‌ها را مقتصدانه مدیریت کنید.\n\nاگر سابقه خانوادگی دارید، فشار خون را هفته‌ای یک بار در خانه اندازه‌گیری کنید. اعداد بالای ۱۴۰/۹۰ نیاز به ارزیابی پزشکی دارد. در سامانه دکترها می‌توانید بدون معطلی از پزشکان قلب نوبت حضوری یا مشاوره تلفنی بگیرید.",
+  1049→      ["فشار خون", "قلب", "پیشگیری"], "published", 4),
+  1050→    mkArticle(4, "اضطراب شبانه؛ راهکارهای عملی برای خواب آرام", "سلامت روان",
+  1051→      "ذهن پر از نگرانی، خواب را می‌دزدد. با این تکنیک‌ها آرامش شبانه را بازگردانید.",
+  1052→      "خیلی از ما شب‌ها با اضطراب به تخت می‌رویم: فهرست کارهای فردا، نگرانی‌های مالی یا مسائل خانوادگی. نتیجه، خواب دیرهنگام و بی‌کیفیت است.\n\nتکنیک اول: «ساعت نگرانی» — یک زمان مشخص در بعدازظهر برای نوشتن نگرانی‌ها و اقدام بعدی هر کدام. ذهن وقتی نگرانی روی کاغذ بیاید، آرام‌تر می‌شود.\n\nتکنیک دوم: ورزش ریتمیک نفس؛ چهار ثانیه دم، چهار ثانیه نگه‌داشتن، شش ثانیه بازدم. این ریتم سیستم پاراسمپاتیک را فعال می‌کند.\n\nسوم: محیط خواب را فقط برای خواب نگه دارید؛ موبایل یک ساعت قبل از خواب کنار گذاشته شود. اگر اضطراب بیش از سه هفته ادامه داشت یا با تپش قلب و حملات هراس همراه بود، مشاوره با روانپزشک یا روان‌شناس را جدی بگیرید؛ مشاوره متنی و تلفنی در دکترها بدون مراجعه حضوری در دسترس است.",
+  1053→      ["اضطراب", "خواب", "سلامت روان"], "published", 6),
+  1054→    mkArticle(5, "تب کودکان؛ چه زمانی نگران‌کننده است؟", "کودکان",
+  1055→      "تب در کودکان همیشه خطرناک نیست، اما چند نشانه خطر است که باید فوراً به پزشک مراجعه کنید.",
+  1056→      "تب، واکنش طبیعی بدن کودک به عفونت است و در اکثر موارد بی‌خطر. اما برای والدان، شب‌های تب‌دار سخت‌ترین لحظات هستند.\n\nدر کودکان زیر ۳ ماه، هر تب بالای ۳۸ درجه نیاز به مراجعه فوری دارد. در کودکان بزرگ‌تر، اگر تب بیش از سه روز ادامه یافت، کودک بی‌اشتها و کم‌انرژی بود، دچار تشنج شد یا علائم کم‌آبی (خشکی دهان، کاهش ادرار) داشت، حتماً به پزشک مراجعه کنید.\n\nاستامینامفن یا ایبوپروفن با دوز مناسب وزن، لباس نازک و مایعات فراوان کمک‌کننده‌اند. پاشویه با الکل و آب سرد ممنوع است؛ لرز بدتر می‌شود.\n\nبرای مشاوره شبانه، می‌توانید از بخش مشاوره متنی با پزشکان اطفال سامانه استفاده کنید؛ پاسخ‌ها معمولاً در کمتر از چند دقیقه ثبت می‌شود.",
+  1057→      ["کودکان", "تب", "والدین"], "published", 3),
+  1058→    mkArticle(6, "خشکی چشم در عصر نمایشگرها", "چشم",
+  1059→      "ساعت‌ها نگاه به صفحه‌نمایش، اشک را تبخیر می‌کند. قانون ۲۰-۲۰-۲۰ را بشناسید.",
+  1060→      "سندرم خشکی چشم در کاربران صفحه‌نمایش چند برابر شده است. وقتی به صفحه خیره می‌شویم، تعداد پلک‌زدن از ۱۵ بار در دقیقه به ۵ بار کاهش می‌یابد و لایه اشک تبخیر می‌شود.\n\nقانون ۲۰-۲۰-۲۰: هر ۲۰ دقیقه، ۲۰ ثانیه به فاصله‌ای حدود ۶ متری نگاه کنید. ارتفاع صفحه‌نمایش کمی پایین‌تر از سطح چشم باشد تا پلک‌ها بسته‌تر بمانند.\n\nاستفاده از قطره اشک مصنوعی بدون نگهدارنده، برای موارد خفیف کافی است. در خشکی‌های شدید با سوزش و تاری دید، معاینه چشم‌پزشک و آزمایش اشک توصیه می‌شود. مصرف آب کافی و رطوبت مناسب محیط نیز مؤثر است.",
+  1061→      ["چشم", "نمایشگر", "خشکی چشم"], "published", 3),
+  1062→    mkArticle(7, "بهداشت دهان و دندان؛ فراتر از مسواک", "دندان",
+  1063→      "مسواک تنها ۶۰٪ سطح دندان را تمیز می‌کند؛ نخ دندان و مسواک بین‌دندانی را جدی بگیرید.",
+  1064→      "همه مسواک می‌زنیم، اما آمار پوسیدگی و بیماری لثه همچنان بالاست. دلیل اصلی، نادیده گرفتن فضاهای بین دندانی است؛ جایی که مسواک به آن نمی‌رسد و ۴۰٪ سطح دندان‌ها را تشکیل می‌دهد.\n\nنخ دندان روزی یک بار، ترجیحاً قبل از خواب، پلاک بین دندانی را حذف می‌کند. مسواک بین‌دندانی برای فاصله‌های بازتر مؤثرتر است.\n\nمسواک‌زدن دو دقیقه‌ای با حرکت چرخشی ملایم و خمیردندان حاوی فلوراید استاندارد طلایی است. زبان را هم مسواک بزنید؛ منبع اصلی بوی دهان است.\n\nجرم‌گیری سالانه و معاینه منظم، پوسیدگی‌های اولیه را قبل از نیاز به عصب‌کشی شناسایی می‌کند. در دکترها می‌توانید از دندانپزشکان نزدیک خود نوبت بگیرید.",
+  1065→      ["دندان", "بهداشت", "لثه"], "published", 3),
+  1066→    mkArticle(8, "مزایای مشاوره پزشکی آنلاین؛ چه زمانی کافی است؟", "سلامت عمومی",
+  1067→      "برای بسیاری از مشکلات، مشاوره آنلاین پاسخ کاملی می‌دهد؛ سریع‌تر، ارزان‌تر و بدون تردد.",
+  1068→      "تجربه جهانی و ایرانی نشان داده است که بخش زیادی از مراجعات حضوری، در واقع سؤال و پیگیری است که می‌تواند آنلاین حل شود: بررسی نتیجه آزمایش، تجدید نسخه، توصیه‌های مراقبتی و مشکلات خفیف پوستی یا گوارشی.\n\nمزیت اول، سرعت است؛ به‌جای چند روز انتظار برای نوبت، در همان روز پاسخ می‌گیرید. مزیت دوم، هزینه کمتر؛ تعرفه مشاوره تلفنی معمولاً ۳۰٪ کمتر از ویزیت حضوری است.\n\nاما مرزها را بشناسید: درد قفسه سینه، تنگی نفس ناگهانی، آسیب‌های شدید و علائم اورژانسی، مشاوره آنلاین جایگزین اورژانس نیست.\n\nدر سامانه دکترها، مشاوره متنی، تلفنی و ویدیویی با پزشکان تأییدشده ارائه می‌شود و اگر پزشک تشخیص دهد، خودش شما را برای ویزیت حضوری ارجاع می‌کند.",
+  1069→      ["مشاوره آنلاین", "تله‌مد", "خدمات"], "published", 4),
+  1070→    mkArticle(9, "کمبود ویتامین D؛ همه‌گیر پنهان", "سلامت عمومی",
+  1071→      "بیش از ۷۰٪ جمعیت ایران کمبود ویتامین D دارند؛ چرا و چه کنیم؟",
+  1072→      "ویتامین D تنها برای استخوان نیست؛ در عملکرد سیستم ایمنی، خلق‌وخو و متابولیسم هم نقش دارد. مطالعات ایرانی نشان می‌دهد اکثریت جمعیت، حتی در شهرهای آفتابی، دچار کمبود هستند؛ سبک زندگی داخل‌نشین و پوشش کامل در برابر آفتاب دلایل اصلی‌اند.\n\nعلائم کمبود: خستگی مزمن، درد عضلانی و استخوانی، خلق پایین و عفونت‌های مکرر. تشخیص با آزمایش خون ۲۵(OH)D ساده است؛ سطح مطلوب بالای ۳۰ نانوگرم بر میلی‌لیتر.\n\nتأمین درمانی با قرص‌های مکمل و با نظر پزشک انجام می‌شود؛ دوز بالا بدون آزمایش توصیه نمی‌شود. نور آفتاب ۱۰ تا ۳۰ دقیقه‌ای روی ساعد و صورت، چند روز در هفته، پیشگیری طبیعی است. برای سنجش سطح ویتامین D خود می‌توانید آزمایش را در سامانه سفارش دهید و نتیجه را از پزشک غدد پیگیری کنید.",
+  1073→      ["ویتامین D", "آزمایش", "سلامت"], "published", 4),
+  1074→    mkArticle(10, "ورزش سبک و سلامت قلب؛ راهنمای شروع", "سلامت قلب",
+  1075→      "برای قلب، ۱۵۰ دقیقه پیاده‌روی سریع در هفته معجزه می‌کند؛ از همین هفته شروع کنید.",
+  1076→      "قلب عضله است و مثل هر عضله، فعالیت منظم می‌خواهد. خبر خوب اینکه برای رسیدن به اثر محافظتی قلب، ورزش سنگین لازم نیست؛ ۱۵۰ دقیقه فعالیت هوازی متوسط در هفته کافی است.\n\nشروع ایده‌آل: ۵ روز، ۳۰ دقیقه پیاده‌روی تند. اگر کم‌انرژی هستید، سه دوره ۱۰ دقیقه‌ای هم اثر دارد. طناب‌کشی سبک، دوچرخه ثابت و شنا گزینه‌های هوازی دیگرند.\n\nقبل از شروع، اگر بالای ۴۵ سال هستید، سیگاری هستید یا سابقه قلبی خانوادگی دارید، با ارزیابی پزشک شروع کنید. درد قفسه سینه یا تنگی نفس غیرعادی هنگام ورزش، علامت توقف فوری است.\n\nگام‌های کوچک و پیوسته، بهتر از ورزش‌های شدید و ناگهانی است؛ استمرار مهم‌تر از شدت است.",
+  1077→      ["قلب", "ورزش", "پیشگیری"], "draft", 5),
+  1078→  ];
+  1079→
+  1080→  /* ------------------------------ banners ---------------------------- */
+  1081→
+  1082→  const banners: DbSeed["banners"] = [
+  1083→    { id: "ban-1", title: "نوبت‌دهی آنلاین بدون معطلی", subtitle: "بیش از ۳۰ پزشک متخصص در ۱۲ تخصص آماده پاسخ‌گویی هستند", hue: 173, link: "/doctors", active: true, order: 1 },
+  1084→    { id: "ban-2", title: "مشاوره تلفنی در همان روز", subtitle: "برای نوبت فوری، مشاوره تلفنی ۵ دقیقه‌ای رزرو کنید", hue: 220, link: "/doctors", active: true, order: 2 },
+  1085→    { id: "ban-3", title: "آزمایش در منزل", subtitle: "نمونه‌گیری در محل شما با ۲۰٪ تخفیف ویژه این هفته", hue: 32, link: "/patient/labs", active: true, order: 3 },
+  1086→    { id: "ban-4", title: "عضویت پزشکان", subtitle: "درآمد و تجربه نوبت‌دهی آنلاین را به مطب خود بیاورید", hue: 280, link: "/", active: false, order: 4 },
+  1087→  ];
+  1088→
+  1089→  /* --------------------------- discount codes ------------------------ */
+  1090→
+  1091→  const discountCodes: DbSeed["discountCodes"] = [
+  1092→    { id: "dsc-1", code: "WELCOME15", percent: 15, maxUses: 500, usedCount: 217, active: true, expiresAtISO: addDaysISO(today, 60), minAmount: 200_000 },
+  1093→    { id: "dsc-2", code: "FIRST20", percent: 20, maxUses: 200, usedCount: 198, active: true, expiresAtISO: addDaysISO(today, 5), minAmount: 500_000 },
+  1094→    { id: "dsc-3", code: "SKIN10", percent: 10, maxUses: 300, usedCount: 121, active: true, expiresAtISO: addDaysISO(today, 30), minAmount: 100_000 },
+  1095→    { id: "dsc-4", code: "LAB25", percent: 25, maxUses: 100, usedCount: 100, active: false, expiresAtISO: subDaysISO(today, 10), minAmount: 300_000 },
+  1096→    { id: "dsc-5", code: "TELEMED10", percent: 10, maxUses: 1000, usedCount: 452, active: true, expiresAtISO: addDaysISO(today, 90), minAmount: 150_000 },
+  1097→    { id: "dsc-6", code: "FAMILY5", percent: 5, maxUses: 400, usedCount: 39, active: true, expiresAtISO: addDaysISO(today, 45), minAmount: 100_000 },
+  1098→  ];
+  1099→
+  1100→  /* ----------------------------- audit log --------------------------- */
+  1101→
+  1102→  const auditLog: DbSeed["auditLog"] = [];
+  1103→  for (let i = 0; i < 40; i++) {
+  1104→    const a = pick(P.AUDIT_ACTIONS);
+  1105→    auditLog.push({
+  1106→      id: nid("aud"),
+  1107→      actorName: pick([staff[0].name, staff[4].name, staff[1].name]),
+  1108→      actorRole: bool(0.75) ? "admin" : "support",
+  1109→      action: a.action,
+  1110→      target: `${a.target} — ${pick(["موفق", "موفق", "موفق", "با هشدار"])}`,
+  1111→      atISO: randDateTime(subDaysISO(today, int(0, 30)), 8, 21),
+  1112→    });
+  1113→  }
+  1114→
+  1115→  /* --------------------------- notifications ------------------------- */
+  1116→
+  1117→  const notifications: DbSeed["notifications"] = [];
+  1118→  const mkNotif = (
+  1119→    role: DbSeed["notifications"][number]["role"],
+  1120→    userId: string | undefined,
+  1121→    title: string,
+  1122→    body: string,
+  1123→    daysAgo: number,
+  1124→    read = false,
+  1125→    link?: string
+  1126→  ) =>
+  1127→    notifications.push({
+  1128→      id: nid("ntf"),
+  1129→      role,
+  1130→      userId,
+  1131→      title,
+  1132→      body,
+  1133→      read,
+  1134→      createdAtISO: randDateTime(subDaysISO(today, daysAgo), 8, 21),
+  1135→      link,
+  1136→    });
+  1137→
+  1138→  mkNotif("doctor", mainDoctor.id, "نوبت جدید ثبت شد", "برای فردا ساعت ۱۰:۰۰ یک نوبت حضوری جدید ثبت شد.", 0, false, "/doctor/calendar");
+  1139→  mkNotif("doctor", mainDoctor.id, "مشاوره جدید", "یک مشاوره متنی جدید در انتظار پاسخ شماست.", 0, false, "/doctor/consultations");
+  1140→  mkNotif("doctor", mainDoctor.id, "نظر جدید ثبت شد", "یک نظر ۵ ستاره جدید برای شما ثبت شد.", 1, true, "/doctor/reviews");
+  1141→  mkNotif("doctor", mainDoctor.id, "درخواست تسویه تأیید شد", "درخواست تسویه حساب شما به مبلغ ۶٬۲۰۰٬۰۰۰ تومان تأیید شد.", 2, true, "/doctor/finance");
+  1142→  mkNotif("patient", mainPatient.id, "نوبت شما تأیید شد", `نوبت شما با ${mainDoctor.name} تأیید شد.`, 0, false, "/patient/appointments");
+  1143→  mkNotif("patient", mainPatient.id, "یادآوری نوبت", `نوبت شما فردا ساعت ۱۰:۰۰ با ${mainDoctor.name} است.`, 0, false, "/patient/appointments");
+  1144→  mkNotif("patient", mainPatient.id, "جواب آزمایش آماده شد", "جواب آزمایش «تیروئید» در بخش آزمایش‌ها قابل مشاهده است.", 1, true, "/patient/labs");
+  1145→  mkNotif("patient", mainPatient.id, "پاسخ پشتیبانی", "به تیکت «مبلغ پرداخت‌شده نوبت در انتظار است» پاسخ جدیدی داده شد.", 0, false, "/patient/support");
+  1146→  mkNotif("support", staff[1].id, "تیکت جدید", "تیکت «امکان انتخاب نوبت بعد از ساعت ۱۸» ثبت شد.", 0, false, "/support/tickets");
+  1147→  mkNotif("support", staff[1].id, "تیکت فوری", "یک تیکت فوری با موضوع پرداخت منتظر تخصیص است.", 0, false, "/support/tickets");
+  1148→  mkNotif("admin", staff[0].id, "پزشک جدید در انتظار تأیید", "یک پزشک جدید درخواست عضویت ثبت کرد؛ مدارک را بررسی کنید.", 0, false, "/admin/doctors");
+  1149→  mkNotif("admin", staff[0].id, "درخواست تسویه جدید", `${mainDoctor.name} درخواست تسویه حساب ثبت کرد.`, 1, false, "/admin/finance");
+  1150→  for (let i = 0; i < 22; i++) {
+  1151→    const isDoctorN = bool(0.5);
+  1152→    mkNotif(
+  1153→      isDoctorN ? "doctor" : "patient",
+  1154→      undefined,
+  1155→      pick(["به دکترها خوش آمدید", "تکمیل پروفایل، اعتماد بیشتر بیماران", "نظرسنجی جدید", "به‌روزرسانی قوانین سامانه"]),
+  1156→      "این یک اعلان عمومی نمونه است تا صفحات اعلان‌ها واقعی به نظر برسند.",
+  1157→      int(1, 20),
+  1158→      true
+  1159→    );
+  1160→  }
+  1161→
+  1162→  /* ---------------------------- favorites ---------------------------- */
+  1163→
+  1164→  const favorites: DbSeed["favorites"] = [
+  1165→    { patientId: mainPatient.id, doctorId: mainDoctor.id },
+  1166→    { patientId: mainPatient.id, doctorId: doctors.find((d) => d.specialtyId === "cardio")!.id },
+  1167→    { patientId: mainPatient.id, doctorId: doctors.find((d) => d.specialtyId === "nutrition")!.id },
+  1168→  ];
+  1169→
+  1170→  /* --------------------------- monthly stats ------------------------ */
+  1171→
+  1172→  const monthlyStats: DbSeed["monthlyStats"] = [];
+  1173→  for (let back = 5; back >= 0; back--) {
+  1174→    const anchor = subDaysISO(today, back * 30 + 15);
+  1175→    const key = jalaliMonthKey(anchor);
+  1176→    const monthAppts = appointments.filter((a) => jalaliMonthKey(a.date) === key);
+  1177→    const monthTrx = transactions.filter((t) => t.status === "success" && jalaliMonthKey(t.createdAtISO) === key);
+  1178→    const gmv = monthTrx.filter((t) => t.direction === "in").reduce((s, t) => s + t.amount, 0);
+  1179→    const commission = monthAppts
+  1180→      .filter((a) => a.paymentStatus === "paid")
+  1181→      .reduce((s, a) => s + a.commission, 0);
+  1182→    const bookings = monthAppts.length;
+  1183→    monthlyStats.push({
+  1184→      monthKey: key,
+  1185→      searches: Math.round(bookings * int(7, 11)),
+  1186→      profileViews: Math.round(bookings * int(4, 7)),
+  1187→      bookings,
+  1188→      payments: monthTrx.filter((t) => t.direction === "in").length,
+  1189→      gmv,
+  1190→      commission,
+  1191→      newPatients: patients.filter((p) => jalaliMonthKey(p.createdAtISO) === key).length || int(3, 8),
+  1192→      newDoctors: back === 0 ? 1 : 0,
+  1193→    });
+  1194→  }
+  1195→
+  1196→  return {
+  1197→    specialties: SPECIALTIES.map((s) => ({ ...s })),
+  1198→    services: CLINIC_SERVICES.map((s) => ({ ...s })),
+  1199→    doctors, patients, appointments, consultations, reviews, labOrders,
+  1200→    transactions, settlements, tickets, staff, cannedReplies, faqs,
+  1201→    articles, banners, centers, discountCodes, auditLog, notifications,
+  1202→    monthlyStats, favorites,
+  1203→    seededAtISO: nowISODateTime(),
+  1204→  };
+  1205→}
+  1206→
+  1207→/* Convenience: main demo user ids used across the app */
+  1208→export const DEMO_IDS = {
+  1209→  doctorId: "doc-0001",
+  1210→  patientId: "pat-0001",
+  1211→  adminId: "stf-0001",
+  1212→  supportId: "stf-0002",
+  1213→} as const;
+  1214→
+  1215→

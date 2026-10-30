@@ -1,0 +1,616 @@
+    44→    44→import { StatusBadge } from "@/components/shared/status-badge";
+    45→    45→import { useCurrentPatient, validateDiscount, type DiscountResult } from "@/features/patient/helpers";
+    46→    46→import { useAppStore } from "@/store/app-store";
+    47→    47→import { BookingMonthGrid } from "./month-grid";
+    48→    48→
+    49→    49→const STEPS = [
+    50→    50→  { n: 1, title: "نوع ویزیت" },
+    51→    51→  { n: 2, title: "انتخاب روز" },
+    52→    52→  { n: 3, title: "انتخاب ساعت" },
+    53→    53→  { n: 4, title: "مشخصات متقاضی" },
+    54→    54→  { n: 5, title: "پرداخت" },
+    55→    55→  { n: 6, title: "تأیید نهایی" },
+    56→    56→] as const;
+    57→    57→
+    58→    58→const VISIT_ICONS: Record<VisitType, typeof Stethoscope> = {
+    59→    59→  "in-person": Stethoscope,
+    60→    60→  phone: Phone,
+    61→    61→  text: MessageCircle,
+    62→    62→  video: Video,
+    63→    63→};
+    64→    64→
+    65→    65→export function BookingWizard({ doctor }: { doctor: Doctor }) {
+    66→    66→  const patient = useCurrentPatient();
+    67→    67→  const appointments = useAppStore((s) => s.appointments);
+    68→    68→  const discountCodes = useAppStore((s) => s.discountCodes);
+    69→    69→  const bookAppointment = useAppStore((s) => s.bookAppointment);
+    70→    70→
+    71→    71→  const [step, setStep] = useState(1);
+    72→    72→  const [visitType, setVisitType] = useState<VisitType | null>(null);
+    73→    73→  const [date, setDate] = useState<string | null>(null);
+    74→    74→  const [time, setTime] = useState<string | null>(null);
+    75→    75→  const [applicantId, setApplicantId] = useState<string>("self");
+    76→    76→  const [reason, setReason] = useState("");
+    77→    77→  const [codeInput, setCodeInput] = useState("");
+    78→    78→  const [discount, setDiscount] = useState<DiscountResult | null>(null);
+    79→    79→  const [gatewayOpen, setGatewayOpen] = useState(false);
+    80→    80→  const [booked, setBooked] = useState<Appointment | null>(null);
+    81→    81→
+    82→    82→  const fee = visitType
+    83→    83→    ? visitType === "in-person"
+    84→    84→      ? doctor.visitFee
+    85→    85→      : visitType === "phone"
+    86→    86→        ? doctor.phoneFee
+    87→    87→        : visitType === "text"
+    88→    88→          ? doctor.textFee
+    89→    89→          : doctor.videoFee
+    90→    90→    : 0;
+    91→    91→  const payable = discount?.payable ?? fee;
+    92→    92→
+    93→    93→  const slots = useMemo(() => {
+    94→    94→    if (!date || !visitType) return [];
+    95→    95→    const category = visitType === "in-person" ? "in-person" : "online";
+    96→    96→    const docAppointments = appointments.filter((a) => a.doctorId === doctor.id);
+    97→    97→    return generateSlotsForDate(doctor, date, docAppointments).filter((s) => s.visitType === category);
+    98→    98→  }, [doctor, date, visitType, appointments]);
+    99→    99→
+   100→   100→  const applicant = useMemo(() => {
+   101→   101→    if (!patient) return null;
+   102→   102→    if (applicantId === "self") return { name: patient.name, nationalId: patient.nationalId, relation: "خودم" };
+   103→   103→    const member = patient.family.find((m) => m.id === applicantId);
+   104→   104→    return member ? { name: member.name, nationalId: member.nationalId, relation: member.relation } : null;
+   105→   105→  }, [patient, applicantId]);
+   106→   106→
+   107→   107→  const goNext = () => {
+   108→   108→    if (step === 1 && !visitType) return toast.error("نوع ویزیت را انتخاب کنید");
+   109→   109→    if (step === 2 && !date) return toast.error("یک روز را انتخاب کنید");
+   110→   110→    if (step === 3 && !time) return toast.error("ساعت نوبت را انتخاب کنید");
+   111→   111→    setStep((s) => Math.min(s + 1, 5));
+   112→   112→  };
+   113→   113→
+   114→   114→  const pickVisitType = (vt: VisitType) => {
+   115→   115→    setVisitType(vt);
+   116→   116→    setDate(null);
+   117→   117→    setTime(null);
+   118→   118→    setDiscount(null);
+   119→   119→    setCodeInput("");
+   120→   120→  };
+   121→   121→
+   122→   122→  const applyCode = () => {
+   123→   123→    if (!visitType) return;
+   124→   124→    const result = validateDiscount(codeInput, fee, discountCodes, todayISO());
+   125→   125→    if (!result.ok) {
+   126→   126→      setDiscount(null);
+   127→   127→      toast.error(result.message);
+   128→   128→      return;
+   129→   129→    }
+   130→   130→    setDiscount(result);
+   131→   131→    toast.success(result.message);
+   132→   132→  };
+   133→   133→
+   134→   134→  /** duplicate guard: same doctor + date + time while active */
+   135→   135→  const hasActiveDuplicate = useMemo(() => {
+   136→   136→    if (!patient || !date || !time) return false;
+   137→   137→    return appointments.some(
+   138→   138→      (a) =>
+   139→   139→        a.patientId === patient.id &&
+   140→   140→        a.doctorId === doctor.id &&
+   141→   141→        a.date === date &&
+   142→   142→        a.time === time &&
+   143→   143→        (a.status === "pending" || a.status === "confirmed")
+   144→   144→    );
+   145→   145→  }, [appointments, patient, doctor.id, date, time]);
+   146→   146→
+   147→   147→  const completePayment = () => {
+   148→   148→    if (!patient || !visitType || !date || !time) return;
+   149→   149→    if (hasActiveDuplicate) {
+   150→   150→      setGatewayOpen(false);
+   151→   151→      toast.error("شما در همین تاریخ و ساعت برای این پزشک نوبت فعال دارید");
+   152→   152→      return;
+   153→   153→    }
+   154→   154→    const member = patient.family.find((m) => m.id === applicantId);
+   155→   155→    const appointment = bookAppointment({
+   156→   156→      doctorId: doctor.id,
+   157→   157→      patientId: patient.id,
+   158→   158→      forFamilyMember: applicantId === "self" ? undefined : member,
+   159→   159→      date,
+   160→   160→      time,
+   161→   161→      visitType,
+   162→   162→      reason: reason.trim() || undefined,
+   163→   163→      payNow: true,
+   164→   164→    });
+   165→   165→    setBooked(appointment);
+   166→   166→    setGatewayOpen(false);
+   167→   167→    setStep(6);
+   168→   168→    toast.success("پرداخت با موفقیت انجام شد");
+   169→   169→  };
+   170→   170→
+   171→   171→  const payViaWallet = () => {
+   172→   172→    if (hasActiveDuplicate) return toast.error("شما در همین تاریخ و ساعت برای این پزشک نوبت فعال دارید");
+   173→   173→    completePayment();
+   174→   174→  };
+   175→   175→
+   176→   176→  const payViaGatewayFail = () => {
+   177→   177→    setGatewayOpen(false);
+   178→   178→    toast.error("پرداخت ناموفق بود؛ دوباره تلاش کنید");
+   179→   179→  };
+   180→   180→
+   181→   181→  if (!patient) return null;
+   182→   182→
+   183→   183→  return (
+   184→   184→    <div className="space-y-5">
+   185→   185→      {/* doctor summary card */}
+   186→   186→      <Card className="overflow-hidden">
+   187→   187→        <CardContent className="flex flex-wrap items-center gap-4 p-4">
+   188→   188→          <UserAvatar name={doctor.name} hue={doctor.avatarHue} size="lg" />
+   189→   189→          <div className="min-w-0 flex-1">
+   190→   190→            <p className="truncate text-lg font-bold">{doctor.name}</p>
+   191→   191→            <p className="text-sm text-muted-foreground">
+   192→   192→              {SPECIALTY_LABELS[doctor.specialtyId]} • {toFa(doctor.experienceYears)} سال سابقه
+   193→   193→            </p>
+   194→   194→            <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+   195→   195→              <MapPin className="size-3.5" aria-hidden />
+   196→   196→              {doctor.city} — {doctor.address}
+   197→   197→            </p>
+   198→   198→          </div>
+   199→   199→          <div className="flex flex-col items-start gap-1">
+   200→   200→            <RatingStars value={doctor.rating} count={doctor.reviewCount} />
+   201→   201→            <span className="text-xs text-muted-foreground">نوبت‌دهی تا ۴۵ روز آینده</span>
+   202→   202→          </div>
+   203→   203→        </CardContent>
+   204→   204→      </Card>
+   205→   205→
+   206→   206→      {/* stepper */}
+   207→   207→      <ol className="flex items-center gap-1 overflow-x-auto rounded-2xl border bg-card p-2" aria-label="مراحل رزرو">
+   208→   208→        {STEPS.map((s, i) => {
+   209→   209→          const done = step > s.n || (step === 6 && s.n === 6);
+   210→   210→          const current = step === s.n;
+   211→   211→          return (
+   212→   212→            <li key={s.n} className="flex min-w-0 flex-1 items-center gap-1.5">
+   213→   213→              <div
+   214→   214→                className={cn(
+   215→   215→                  "flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-xs font-medium whitespace-nowrap",
+   216→   216→                  current && "bg-primary text-primary-foreground shadow-sm",
+   217→   217→                  done && !current && "text-emerald-600 dark:text-emerald-400",
+   218→   218→                  !current && !done && "text-muted-foreground"
+   219→   219→                )}
+   220→   220→                aria-current={current ? "step" : undefined}
+   221→   221→              >
+   222→   222→                <span
+   223→   223→                  className={cn(
+   224→   224→                    "grid size-5 shrink-0 place-items-center rounded-full border text-[10px]",
+   225→   225→                    current ? "border-primary-foreground/40 bg-primary-foreground/15" : "",
+   226→   226→                    done ? "border-emerald-500/40 bg-emerald-500/15" : "border-muted-foreground/30"
+   227→   227→                  )}
+   228→   228→                >
+   229→   229→                  {done ? <Check className="size-3" aria-hidden /> : toFa(s.n)}
+   230→   230→                </span>
+   231→   231→                {s.title}
+   232→   232→              </div>
+   233→   233→              {i < STEPS.length - 1 && <ChevronLeft className="size-3.5 shrink-0 text-muted-foreground/40" aria-hidden />}
+   234→   234→            </li>
+   235→   235→          );
+   236→   236→        })}
+   237→   237→      </ol>
+   238→   238→
+   239→   239→      {/* step body */}
+   240→   240→      {step === 1 && (
+   241→   241→        <Card>
+   242→   242→          <CardContent className="space-y-4 p-5">
+   243→   243→            <div>
+   244→   244→              <h2 className="font-bold">نوع ویزیت را انتخاب کنید</h2>
+   245→   245→              <p className="text-sm text-muted-foreground">تعرفه هر نوع ویزیت برای این پزشک در ادامه آمده است.</p>
+   246→   246→            </div>
+   247→   247→            <div className="grid gap-3 sm:grid-cols-2">
+   248→   248→              {(Object.keys(VISIT_TYPE_LABELS) as VisitType[]).map((vt) => {
+   249→   249→                const disabled = vt !== "in-person" && !doctor.availableOnline;
+   250→   250→                const vtFee = vt === "in-person" ? doctor.visitFee : vt === "phone" ? doctor.phoneFee : vt === "text" ? doctor.textFee : doctor.videoFee;
+   251→   251→                const Icon = VISIT_ICONS[vt];
+   252→   252→                const card = (
+   253→   253→                  <button
+   254→   254→                    key={vt}
+   255→   255→                    type="button"
+   256→   256→                    role="radio"
+   257→   257→                    aria-checked={visitType === vt}
+   258→   258→                    disabled={disabled}
+   259→   259→                    onClick={() => pickVisitType(vt)}
+   260→   260→                    className={cn(
+   261→   261→                      "flex items-center gap-3 rounded-2xl border p-4 text-start transition-all",
+   262→   262→                      visitType === vt ? "border-primary bg-primary/5 shadow-sm" : "hover:border-primary/40",
+   263→   263→                      disabled && "cursor-not-allowed opacity-45"
+   264→   264→                    )}
+   265→   265→                  >
+   266→   266→                    <span
+   267→   267→                      className={cn(
+   268→   268→                        "grid size-11 shrink-0 place-items-center rounded-xl",
+   269→   269→                        visitType === vt ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+   270→   270→                      )}
+   271→   271→                    >
+   272→   272→                      <Icon className="size-5" aria-hidden />
+   273→   273→                    </span>
+   274→   274→                    <span className="min-w-0 flex-1">
+   275→   275→                      <span className="block font-bold">{VISIT_TYPE_LABELS[vt]}</span>
+   276→   276→                      <span className="block text-sm font-semibold text-primary tabular-nums">{toman(vtFee)}</span>
+   277→   277→                      {disabled && <span className="block text-[11px] text-rose-500">این پزشک ویزیت آنلاین ارائه نمی‌دهد</span>}
+   278→   278→                    </span>
+   279→   279→                    <span
+   280→   280→                      className={cn(
+   281→   281→                        "grid size-5 shrink-0 place-items-center rounded-full border",
+   282→   282→                        visitType === vt && "border-primary bg-primary text-primary-foreground"
+   283→   283→                      )}
+   284→   284→                      aria-hidden
+   285→   285→                    >
+   286→   286→                      {visitType === vt && <Check className="size-3" />}
+   287→   287→                    </span>
+   288→   288→                  </button>
+   289→   289→                );
+   290→   290→                return disabled ? (
+   291→   291→                  <Tooltip key={vt}>
+   292→   292→                    <TooltipTrigger asChild>{card}</TooltipTrigger>
+   293→   293→                    <TooltipContent>این پزشک ویزیت آنلاین ارائه نمی‌دهد</TooltipContent>
+   294→   294→                  </Tooltip>
+   295→   295→                ) : (
+   296→   296→                  card
+   297→   297→                );
+   298→   298→              })}
+   299→   299→            </div>
+   300→   300→          </CardContent>
+   301→   301→        </Card>
+   302→   302→      )}
+   303→   303→
+   304→   304→      {step === 2 && (
+   305→   305→        <Card>
+   306→   306→          <CardContent className="space-y-4 p-5">
+   307→   307→            <div>
+   308→   308→              <h2 className="font-bold">روز را انتخاب کنید</h2>
+   309→   309→              <p className="text-sm text-muted-foreground">فقط روزهای کاری پزشک فعال هستند؛ عدد زیر هر روز = نوبت آزاد.</p>
+   310→   310→            </div>
+   311→   311→            <BookingMonthGrid
+   312→   312→              doctor={doctor}
+   313→   313→              appointments={appointments}
+   314→   314→              visitType={visitType}
+   315→   315→              selected={date}
+   316→   316→              onSelect={(iso) => {
+   317→   317→                setDate(iso);
+   318→   318→                setTime(null);
+   319→   319→              }}
+   320→   320→            />
+   321→   321→          </CardContent>
+   322→   322→        </Card>
+   323→   323→      )}
+   324→   324→
+   325→   325→      {step === 3 && (
+   326→   326→        <Card>
+   327→   327→          <CardContent className="space-y-4 p-5">
+   328→   328→            <div>
+   329→   329→              <h2 className="font-bold">ساعت نوبت را انتخاب کنید</h2>
+   330→   330→              <p className="text-sm text-muted-foreground">
+   331→   331→                {date ? faDate(date) : ""} — مدت هر نوبت ~{toFa(15)} دقیقه
+   332→   332→              </p>
+   333→   333→            </div>
+   334→   334→            {slots.length ? (
+   335→   335→              <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="انتخاب ساعت">
+   336→   336→                {slots.map((slot) => {
+   337→   337→                  const full = slot.remaining <= 0;
+   338→   338→                  return (
+   339→   339→                    <button
+   340→   340→                      key={slot.time}
+   341→   341→                      type="button"
+   342→   342→                      role="radio"
+   343→   343→                      aria-checked={time === slot.time}
+   344→   344→                      disabled={full}
+   345→   345→                      onClick={() => setTime(slot.time)}
+   346→   346→                      className={cn(
+   347→   347→                        "rounded-xl border px-4 py-2 text-sm font-semibold tabular-nums transition-all",
+   348→   348→                        time === slot.time ? "border-primary bg-primary text-primary-foreground shadow-sm" : "hover:border-primary/50",
+   349→   349→                        full && "cursor-not-allowed border-dashed text-muted-foreground/40"
+   350→   350→                      )}
+   351→   351→                    >
+   352→   352→                      {faTime(slot.time)}
+   353→   353→                      {full && <span className="ms-2 text-[11px] font-normal">تکمیل</span>}
+   354→   354→                      {!full && <span className="ms-2 text-[11px] font-normal text-muted-foreground">({toFa(slot.remaining)} آزاد)</span>}
+   355→   355→                    </button>
+   356→   356→                  );
+   357→   357→                })}
+   358→   358→              </div>
+   359→   359→            ) : (
+   360→   360→              <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+   361→   361→                برای این روز نوبت آزادی در این نوع ویزیت باقی نمانده است؛ روز دیگری را انتخاب کنید.
+   362→   362→              </p>
+   363→   363→            )}
+   364→   364→          </CardContent>
+   365→   365→        </Card>
+   366→   366→      )}
+   367→   367→
+   368→   368→      {step === 4 && (
+   369→   369→        <Card>
+   370→   370→          <CardContent className="grid gap-5 p-5 lg:grid-cols-2">
+   371→   371→            <div className="space-y-4">
+   372→   372→              <div>
+   373→   373→                <h2 className="font-bold">نوبت برای چه کسی است؟</h2>
+   374→   374→                <p className="text-sm text-muted-foreground">می‌توانید برای خودتان یا اعضای خانواده نوبت بگیرید.</p>
+   375→   375→              </div>
+   376→   376→              <RadioGroup value={applicantId} onValueChange={setApplicantId} className="gap-2.5">
+   377→   377→                <label
+   378→   378→                  className={cn(
+   379→   379→                    "flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition-colors",
+   380→   380→                    applicantId === "self" && "border-primary bg-primary/5"
+   381→   381→                  )}
+   382→   382→                >
+   383→   383→                  <RadioGroupItem value="self" />
+   384→   384→                  <UserRound className="size-5 text-primary" aria-hidden />
+   385→   385→                  <span className="min-w-0 flex-1">
+   386→   386→                    <span className="block text-sm font-semibold">خودم ({patient.name})</span>
+   387→   387→                    <span className="block text-xs text-muted-foreground tabular-nums">کد ملی: {toFa(patient.nationalId)}</span>
+   388→   388→                  </span>
+   389→   389→                </label>
+   390→   390→                {patient.family.map((m) => (
+   391→   391→                  <label
+   392→   392→                    key={m.id}
+   393→   393→                    className={cn(
+   394→   394→                      "flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition-colors",
+   395→   395→                      applicantId === m.id && "border-primary bg-primary/5"
+   396→   396→                    )}
+   397→   397→                  >
+   398→   398→                    <RadioGroupItem value={m.id} />
+   399→   399→                    <UserRound className="size-5 text-muted-foreground" aria-hidden />
+   400→   400→                    <span className="min-w-0 flex-1">
+   401→   401→                      <span className="block text-sm font-semibold">
+   402→   402→                        {m.name} <span className="text-xs font-normal text-muted-foreground">({m.relation})</span>
+   403→   403→                      </span>
+   404→   404→                      <span className="block text-xs text-muted-foreground tabular-nums">کد ملی: {toFa(m.nationalId)}</span>
+   405→   405→                    </span>
+   406→   406→                  </label>
+   407→   407→                ))}
+   408→   408→              </RadioGroup>
+   409→   409→              {patient.family.length === 0 && (
+   410→   410→                <p className="text-xs text-muted-foreground">
+   411→   411→                  عضو خانواده ثبت نکرده‌اید؛ از بخش{" "}
+   412→   412→                  <Link href="/patient/family" className="text-primary hover:underline">
+   413→   413→                    اعضای خانواده
+   414→   414→                  </Link>{" "}
+   415→   415→                  اضافه کنید.
+   416→   416→                </p>
+   417→   417→              )}
+   418→   418→              <div className="space-y-1.5">
+   419→   419→                <Label htmlFor="reason">علت مراجعه (اختیاری)</Label>
+   420→   420→                <Textarea
+   421→   421→                  id="reason"
+   422→   422→                  value={reason}
+   423→   423→                  onChange={(e) => setReason(e.target.value)}
+   424→   424→                  placeholder="مثلاً: پیگیری درمان قبلی، بررسی نتایج آزمایش…"
+   425→   425→                  className="min-h-24"
+   426→   426→                />
+   427→   427→              </div>
+   428→   428→            </div>
+   429→   429→
+   430→   430→            {/* summary + discount */}
+   431→   431→            <div className="space-y-3 rounded-2xl border bg-muted/40 p-4">
+   432→   432→              <h3 className="flex items-center gap-2 font-bold">
+   433→   433→                <CalendarDays className="size-4.5 text-primary" aria-hidden />
+   434→   434→                خلاصه نوبت
+   435→   435→              </h3>
+   436→   436→              <dl className="space-y-2 text-sm">
+   437→   437→                <div className="flex justify-between gap-2">
+   438→   438→                  <dt className="text-muted-foreground">پزشک</dt>
+   439→   439→                  <dd className="font-medium">{doctor.name}</dd>
+   440→   440→                </div>
+   441→   441→                <div className="flex justify-between gap-2">
+   442→   442→                  <dt className="text-muted-foreground">متقاضی</dt>
+   443→   443→                  <dd className="font-medium">
+   444→   444→                    {applicant?.name} <span className="text-xs text-muted-foreground">({applicant?.relation})</span>
+   445→   445→                  </dd>
+   446→   446→                </div>
+   447→   447→                <div className="flex justify-between gap-2">
+   448→   448→                  <dt className="text-muted-foreground">نوع ویزیت</dt>
+   449→   449→                  <dd className="font-medium">{visitType ? VISIT_TYPE_LABELS[visitType] : "—"}</dd>
+   450→   450→                </div>
+   451→   451→                <div className="flex justify-between gap-2">
+   452→   452→                  <dt className="text-muted-foreground">تاریخ و ساعت</dt>
+   453→   453→                  <dd className="font-medium">
+   454→   454→                    {date ? faDate(date) : "—"} — {time ? faTime(time) : "—"}
+   455→   455→                  </dd>
+   456→   456→                </div>
+   457→   457→                <Separator />
+   458→   458→                <div className="flex justify-between gap-2">
+   459→   459→                  <dt className="font-medium">مبلغ ویزیت</dt>
+   460→   460→                  <dd className="font-bold text-primary tabular-nums">{toman(fee)}</dd>
+   461→   461→                </div>
+   462→   462→                {discount?.ok && (
+   463→   463→                  <div className="flex justify-between gap-2 text-emerald-600 dark:text-emerald-400">
+   464→   464→                    <dt>تخفیف ({toFa(discount.percent ?? 0)}٪)</dt>
+   465→   465→                    <dd className="tabular-nums">− {toman(discount.discountAmount ?? 0)}</dd>
+   466→   466→                  </div>
+   467→   467→                )}
+   468→   468→                {discount?.ok && (
+   469→   469→                  <div className="flex justify-between gap-2 border-t pt-2">
+   470→   470→                    <dt className="font-bold">مبلغ قابل پرداخت</dt>
+   471→   471→                    <dd className="font-bold text-primary tabular-nums">{toman(payable)}</dd>
+   472→   472→                  </div>
+   473→   473→                )}
+   474→   474→              </dl>
+   475→   475→              <div className="space-y-1.5 border-t pt-3">
+   476→   476→                <Label htmlFor="discount" className="text-xs">
+   477→   477→                  کد تخفیف دارید؟
+   478→   478→                </Label>
+   479→   479→                <div className="flex gap-2">
+   480→   480→                  <Input
+   481→   481→                    id="discount"
+   482→   482→                    value={codeInput}
+   483→   483→                    onChange={(e) => setCodeInput(e.target.value)}
+   484→   484→                    placeholder="مثلاً WELCOME15"
+   485→   485→                    dir="ltr"
+   486→   486→                    className="text-start"
+   487→   487→                  />
+   488→   488→                  <Button type="button" variant="secondary" onClick={applyCode}>
+   489→   489→                    اعمال
+   490→   490→                  </Button>
+   491→   491→                </div>
+   492→   492→                {discount?.ok && (
+   493→   493→                  <p className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+   494→   494→                    <BadgeCheck className="size-3.5" aria-hidden />
+   495→   495→                    {discount.message}
+   496→   496→                  </p>
+   497→   497→                )}
+   498→   498→              </div>
+   499→   499→            </div>
+   500→   500→          </CardContent>
+   501→   501→        </Card>
+   502→   502→      )}
+   503→   503→
+   504→   504→      {step === 5 && (
+   505→   505→        <Card>
+   506→   506→          <CardContent className="grid gap-5 p-5 lg:grid-cols-2">
+   507→   507→            <div className="space-y-4">
+   508→   508→              <div>
+   509→   509→                <h2 className="font-bold">پرداخت</h2>
+   510→   510→                <p className="text-sm text-muted-foreground">روش پرداخت را انتخاب کنید؛ نوبت پس از پرداخت تأیید می‌شود.</p>
+   511→   511→              </div>
+   512→   512→              <div className="flex items-center justify-between rounded-2xl border bg-muted/40 p-4">
+   513→   513→                <span className="text-sm text-muted-foreground">مبلغ قابل پرداخت</span>
+   514→   514→                <span className="text-lg font-extrabold text-primary tabular-nums">{toman(payable)}</span>
+   515→   515→              </div>
+   516→   516→              <div className="space-y-2">
+   517→   517→                <Button
+   518→   518→                  size="lg"
+   519→   519→                  className="w-full justify-start gap-2"
+   520→   520→                  disabled={patient.walletBalance < payable}
+   521→   521→                  onClick={payViaWallet}
+   522→   522→                >
+   523→   523→                  <Wallet className="size-5" aria-hidden />
+   524→   524→                  پرداخت از کیف پول
+   525→   525→                </Button>
+   526→   526→                {patient.walletBalance < payable && (
+   527→   527→                  <p className="text-xs font-medium text-rose-500">
+   528→   528→                    موجودی کافی نیست — موجودی فعلی: {toman(patient.walletBalance)} (از بخش{" "}
+   529→   529→                    <Link href="/patient/wallet" className="underline">
+   530→   530→                      کیف پول
+   531→   531→                    </Link>{" "}
+   532→   532→                    شارژ کنید)
+   533→   533→                  </p>
+   534→   534→                )}
+   535→   535→                <Button size="lg" variant="outline" className="w-full justify-start gap-2" onClick={() => setGatewayOpen(true)}>
+   536→   536→                  <Landmark className="size-5" aria-hidden />
+   537→   537→                  درگاه پرداخت بانکی
+   538→   538→                </Button>
+   539→   539→              </div>
+   540→   540→            </div>
+   541→   541→            <div className="rounded-2xl border bg-muted/40 p-4 text-sm">
+   542→   542→              <h3 className="mb-2 font-bold">خلاصه سفارش</h3>
+   543→   543→              <ul className="space-y-1.5 text-muted-foreground">
+   544→   544→                <li>پزشک: <span className="text-foreground">{doctor.name}</span></li>
+   545→   545→                <li>متقاضی: <span className="text-foreground">{applicant?.name}</span></li>
+   546→   546→                <li>نوع: <span className="text-foreground">{visitType ? VISIT_TYPE_LABELS[visitType] : "—"}</span></li>
+   547→   547→                <li>زمان: <span className="text-foreground">{date ? faDate(date) : ""} — {time ? faTime(time) : ""}</span></li>
+   548→   548→                <li>مبلغ: <span className="text-foreground tabular-nums">{toman(payable)}</span></li>
+   549→   549→              </ul>
+   550→   550→            </div>
+   551→   551→          </CardContent>
+   552→   552→        </Card>
+   553→   553→      )}
+   554→   554→
+   555→   555→      {step === 6 && booked && (
+   556→   556→        <Card className="overflow-hidden border-emerald-500/30">
+   557→   557→          <CardContent className="flex flex-col items-center gap-4 p-8 text-center">
+   558→   558→            <span className="grid size-20 place-items-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+   559→   559→              <BadgeCheck className="size-11" aria-hidden />
+   560→   560→            </span>
+   561→   561→            <div className="space-y-1">
+   562→   562→              <h2 className="text-xl font-extrabold">نوبت شما ثبت شد</h2>
+   563→   563→              <p className="text-sm text-muted-foreground">جزئیات نوبت برای شما ارسال شد و در «نوبت‌های من» قابل مشاهده است.</p>
+   564→   564→            </div>
+   565→   565→            <span className="rounded-xl bg-primary/10 px-4 py-2 text-lg font-extrabold tracking-widest text-primary tabular-nums">
+   566→   566→              کد پیگیری: {toFa(booked.code)}
+   567→   567→            </span>
+   568→   568→            <div className="flex flex-wrap items-center justify-center gap-2 text-sm">
+   569→   569→              <StatusBadge status={booked.status} label={APPOINTMENT_STATUS_LABELS[booked.status]} />
+   570→   570→              <span className="font-semibold">{doctor.name}</span>
+   571→   571→              <span className="text-muted-foreground">•</span>
+   572→   572→              <span>{faDate(booked.date)}</span>
+   573→   573→              <span className="text-muted-foreground">•</span>
+   574→   574→              <span>ساعت {faTime(booked.time)}</span>
+   575→   575→            </div>
+   576→   576→            <p className="text-xs text-muted-foreground">
+   577→   577→              این ساعت اکنون برای سایر بیماران رزرو شده و از لیست نوبت‌های آزاد حذف می‌شود.
+   578→   578→            </p>
+   579→   579→            <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+   580→   580→              <Button asChild>
+   581→   581→                <Link href="/patient/appointments">
+   582→   582→                  مشاهده نوبت‌های من
+   583→   583→                  <ChevronLeft className="size-4" aria-hidden />
+   584→   584→                </Link>
+   585→   585→              </Button>
+   586→   586→              <Button variant="outline" asChild>
+   587→   587→                <Link href="/patient/find-doctor">رزرو نوبت جدید</Link>
+   588→   588→              </Button>
+   589→   589→            </div>
+   590→   590→          </CardContent>
+   591→   591→        </Card>
+   592→   592→      )}
+   593→   593→
+   594→   594→      {/* nav buttons */}
+   595→   595→      {step < 5 && (
+   596→   596→        <div className="flex items-center justify-between gap-3">
+   597→   597→          <Button
+   598→   598→            variant="ghost"
+   599→   599→            size="sm"
+   600→   600→            disabled={step <= 1}
+   601→   601→            onClick={() => setStep((s) => Math.max(s - 1, 1))}
+   602→   602→          >
+   603→   603→            <ChevronRight className="size-4" aria-hidden />
+   604→   604→            مرحله قبل
+   605→   605→          </Button>
+   606→   606→          <Button size="sm" onClick={goNext}>
+   607→   607→            مرحله بعد
+   608→   608→            <ChevronLeft className="size-4" aria-hidden />
+   609→   609→          </Button>
+   610→   610→        </div>
+   611→   611→      )}
+   612→   612→
+   613→   613→      {/* fake gateway */}
+   614→   614→      <Dialog open={gatewayOpen} onOpenChange={setGatewayOpen}>
+   615→   615→        <DialogContent className="sm:max-w-md">
+   616→   616→          <DialogHeader>
+   617→   617→            <DialogTitle className="flex items-center gap-2">
+   618→   618→              <Landmark className="size-5 text-primary" aria-hidden />
+   619→   619→              درگاه پرداخت بانکی نمونه
+   620→   620→            </DialogTitle>
+   621→   621→            <DialogDescription>این درگاه صرفاً برای نمایش است؛ نتیجه را انتخاب کنید.</DialogDescription>
+   622→   622→          </DialogHeader>
+   623→   623→          <div className="overflow-hidden rounded-2xl border">
+   624→   624→            <div className="bg-gradient-to-l from-teal-600 to-teal-500 p-3 text-white">
+   625→   625→              <p className="text-xs opacity-80">پرداخت اینترنتی</p>
+   626→   626→              <p className="font-bold">بانک نمونه</p>
+   627→   627→            </div>
+   628→   628→            <dl className="space-y-2 p-4 text-sm">
+   629→   629→              <div className="flex justify-between">
+   630→   630→                <dt className="text-muted-foreground">پذیرنده</dt>
+   631→   631→                <dd className="font-semibold">دکترها</dd>
+   632→   632→              </div>
+   633→   633→              <div className="flex justify-between">
+   634→   634→                <dt className="text-muted-foreground">مبلغ</dt>
+   635→   635→                <dd className="font-bold text-primary tabular-nums">{toman(payable)}</dd>
+   636→   636→              </div>
+   637→   637→              <div className="flex justify-between">
+   638→   638→                <dt className="text-muted-foreground">شماره کارت</dt>
+   639→   639→                <dd className="font-semibold tabular-nums" dir="ltr">
+   640→   640→                  {toFa("6104 **** **** 1234")}
+   641→   641→                </dd>
+   642→   642→              </div>
+   643→   643→            </dl>
+   644→   644→          </div>
+   645→   645→          <div className="flex flex-col gap-2 sm:flex-row-reverse">
+   646→   646→            <Button className="flex-1 gap-2 bg-emerald-600 hover:bg-emerald-700" onClick={completePayment}>
+   647→   647→              <CreditCard className="size-4" aria-hidden />
+   648→   648→              پرداخت موفق
+   649→   649→            </Button>
+   650→   650→            <Button variant="outline" className="flex-1 gap-2 text-rose-600 hover:text-rose-700" onClick={payViaGatewayFail}>
+   651→   651→              پرداخت ناموفق
+   652→   652→            </Button>
+   653→   653→          </div>
+   654→   654→        </DialogContent>
+   655→   655→      </Dialog>
+   656→   656→    </div>
+   657→   657→  );
+   658→   658→}
+   659→   659→

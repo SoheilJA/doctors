@@ -1,0 +1,1048 @@
+     1→"use client";
+     2→
+     3→/**
+     4→ * /doctor/availability — weekly schedule editor (شنبه تا جمعه), off-days,
+     5→ * per-date overrides, live slot preview and booked-appointment conflict alerts.
+     6→ * Everything is edited in a DRAFT; nothing is saved until «ذخیره تقویم».
+     7→ */
+     8→
+     9→import { useMemo, useState } from "react";
+    10→import { useFieldArray, useForm } from "react-hook-form";
+    11→import { zodResolver } from "@hookform/resolvers/zod";
+    12→import { toast } from "sonner";
+    13→import {
+    14→  CalendarClock,
+    15→  CalendarOff,
+    16→  CalendarPlus,
+    17→  Clock,
+    18→  Info,
+    19→  Plus,
+    20→  RotateCcw,
+    21→  Save,
+    22→  Sparkles,
+    23→  Trash2,
+    24→  TriangleAlert,
+    25→} from "lucide-react";
+    26→import { z } from "zod";
+    27→import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+    28→import {
+    29→  AlertDialog,
+    30→  AlertDialogAction,
+    31→  AlertDialogCancel,
+    32→  AlertDialogContent,
+    33→  AlertDialogDescription,
+    34→  AlertDialogFooter,
+    35→  AlertDialogHeader,
+    36→  AlertDialogTitle,
+    37→} from "@/components/ui/alert-dialog";
+    38→import { Badge } from "@/components/ui/badge";
+    39→import { Button } from "@/components/ui/button";
+    40→import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+    41→import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+    42→import { Input } from "@/components/ui/input";
+    43→import { Label } from "@/components/ui/label";
+    44→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+    45→import { Separator } from "@/components/ui/separator";
+    46→import { Switch } from "@/components/ui/switch";
+    47→import { EmptyState } from "@/components/shared/empty-state";
+    48→import { JalaliDatePicker } from "@/components/shared/jalali-date-picker";
+    49→import { PageHeader } from "@/components/shared/page-header";
+    50→import { useDemoLoading } from "@/components/shared/hydration-gate";
+    51→import { useAppStore } from "@/store/app-store";
+    52→import { DURATIONS } from "@/lib/constants";
+    53→import { faDateMedium, faTime, JALALI_WEEKDAYS, minutesToTime, timeToMinutes, todayISO } from "@/lib/jalali";
+    54→import { toFa } from "@/lib/fa";
+    55→import { findConflictingAppointments, generateSlotsForDate, findOffDay, timeRangeSchema, validateWeeklySchedule } from "@/lib/schedule";
+    56→import { useDoctorPanel } from "@/features/doctor/shared";
+    57→import type { Appointment, DateOverride, Doctor, OffDay, TimeRange, WeeklySchedule } from "@/types";
+    58→
+    59→/* ------------------------- option helpers ------------------------- */
+    60→
+    61→const genLocalId = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 9)}${Date.now() % 10_000}`;
+    62→
+    63→const TIME_OPTIONS: string[] = (() => {
+    64→  const out: string[] = [];
+    65→  for (let m = timeToMinutes("06:00"); m <= timeToMinutes("23:00"); m += 15) out.push(minutesToTime(m));
+    66→  return out;
+    67→})();
+    68→
+    69→const BUFFER_OPTIONS = [0, 5, 10, 15, 20, 30, 45];
+    70→const MAX_SLOT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    71→const DRAFT_MAX_RANGES = 4;
+    72→
+    73→const VISIT_RANGE_LABELS: Record<TimeRange["visitType"], string> = { "in-person": "حضوری", online: "آنلاین" };
+    74→
+    75→function newRange(): TimeRange {
+    76→  return { id: genLocalId("tr"), start: "09:00", end: "13:00", visitType: "in-person", duration: 15, buffer: 0, maxPerSlot: 2 };
+    77→}
+    78→
+    79→function rangeSummary(r: TimeRange): string {
+    80→  return `${faTime(r.start)} تا ${faTime(r.end)} (${VISIT_RANGE_LABELS[r.visitType]})`;
+    81→}
+    82→
+    83→/* ------------------------- mini select ------------------------- */
+    84→
+    85→function MiniSelect({
+    86→  label,
+    87→  value,
+    88→  onChange,
+    89→  options,
+    90→  ariaLabel,
+    91→}: {
+    92→  label: string;
+    93→  value: string;
+    94→  onChange: (v: string) => void;
+    95→  options: { value: string; label: string }[];
+    96→  ariaLabel: string;
+    97→}) {
+    98→  return (
+    99→    <label className="block min-w-0 space-y-1">
+   100→      <span className="text-[11px] font-medium text-muted-foreground">{label}</span>
+   101→      <Select value={value} onValueChange={onChange}>
+   102→        <SelectTrigger className="h-8 w-full text-xs" aria-label={ariaLabel}>
+   103→          <SelectValue />
+   104→        </SelectTrigger>
+   105→        <SelectContent className="max-h-64">
+   106→          {options.map((o) => (
+   107→            <SelectItem key={o.value} value={o.value}>
+   108→              {o.label}
+   109→            </SelectItem>
+   110→          ))}
+   111→        </SelectContent>
+   112→      </Select>
+   113→    </label>
+   114→  );
+   115→}
+   116→
+   117→/* ------------------------- range editor row ------------------------- */
+   118→
+   119→function RangeRow({
+   120→  range,
+   121→  onChange,
+   122→  onRemove,
+   123→  canRemove,
+   124→}: {
+   125→  range: TimeRange;
+   126→  onChange: (patch: Partial<TimeRange>) => void;
+   127→  onRemove: () => void;
+   128→  canRemove: boolean;
+   129→}) {
+   130→  const timeOptions = TIME_OPTIONS.map((t) => ({ value: t, label: faTime(t) }));
+   131→  return (
+   132→    <div className="rounded-xl border bg-muted/30 p-2.5">
+   133→      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+   134→        <MiniSelect
+   135→          label="شروع"
+   136→          ariaLabel="ساعت شروع بازه"
+   137→          value={range.start}
+   138→          options={timeOptions}
+   139→          onChange={(v) => onChange({ start: v })}
+   140→        />
+   141→        <MiniSelect
+   142→          label="پایان"
+   143→          ariaLabel="ساعت پایان بازه"
+   144→          value={range.end}
+   145→          options={timeOptions}
+   146→          onChange={(v) => onChange({ end: v })}
+   147→        />
+   148→        <MiniSelect
+   149→          label="نوع ویزیت"
+   150→          ariaLabel="نوع ویزیت این بازه"
+   151→          value={range.visitType}
+   152→          options={[
+   153→            { value: "in-person", label: "حضوری" },
+   154→            { value: "online", label: "آنلاین" },
+   155→          ]}
+   156→          onChange={(v) => onChange({ visitType: v as TimeRange["visitType"] })}
+   157→        />
+   158→        <MiniSelect
+   159→          label="مدت ویزیت"
+   160→          ariaLabel="مدت هر ویزیت"
+   161→          value={String(range.duration)}
+   162→          options={DURATIONS.map((d) => ({ value: String(d), label: `${toFa(d)} دقیقه` }))}
+   163→          onChange={(v) => onChange({ duration: Number(v) })}
+   164→        />
+   165→        <MiniSelect
+   166→          label="فاصله بین نوبت‌ها"
+   167→          ariaLabel="فاصله بین نوبت‌ها"
+   168→          value={String(range.buffer)}
+   169→          options={BUFFER_OPTIONS.map((b) => ({ value: String(b), label: b === 0 ? "بدون فاصله" : `${toFa(b)} دقیقه` }))}
+   170→          onChange={(v) => onChange({ buffer: Number(v) })}
+   171→        />
+   172→        <MiniSelect
+   173→          label="حداکثر بیمار در نوبت"
+   174→          ariaLabel="حداکثر بیمار در هر نوبت"
+   175→          value={String(range.maxPerSlot)}
+   176→          options={MAX_SLOT_OPTIONS.map((m) => ({ value: String(m), label: `${toFa(m)} نفر` }))}
+   177→          onChange={(v) => onChange({ maxPerSlot: Number(v) })}
+   178→        />
+   179→        <div className="col-span-2 flex items-end sm:col-span-1">
+   180→          <Button
+   181→            type="button"
+   182→            variant="ghost"
+   183→            size="sm"
+   184→            className="h-8 w-full text-rose-600 hover:text-rose-700"
+   185→            onClick={onRemove}
+   186→            disabled={!canRemove}
+   187→            aria-label="حذف این بازه"
+   188→          >
+   189→            <Trash2 className="size-3.5" aria-hidden />
+   190→            حذف بازه
+   191→          </Button>
+   192→        </div>
+   193→      </div>
+   194→    </div>
+   195→  );
+   196→}
+   197→
+   198→/* ------------------------- weekday editor ------------------------- */
+   199→
+   200→function WeekdayEditor({
+   201→  day,
+   202→  schedule,
+   203→  errors,
+   204→  onToggle,
+   205→  onUpdateRange,
+   206→  onAddRange,
+   207→  onRemoveRange,
+   208→}: {
+   209→  day: number;
+   210→  schedule: { active: boolean; ranges: TimeRange[] };
+   211→  errors?: string[];
+   212→  onToggle: (active: boolean) => void;
+   213→  onUpdateRange: (rangeId: string, patch: Partial<TimeRange>) => void;
+   214→  onAddRange: () => void;
+   215→  onRemoveRange: (rangeId: string) => void;
+   216→}) {
+   217→  return (
+   218→    <Card className={schedule.active ? "" : "opacity-80"}>
+   219→      <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
+   220→        <div className="flex items-center gap-2.5">
+   221→          <Switch
+   222→            id={`day-${day}`}
+   223→            checked={schedule.active}
+   224→            onCheckedChange={onToggle}
+   225→            aria-label={`${JALALI_WEEKDAYS[day]} ${schedule.active ? "فعال" : "غیرفعال"}`}
+   226→          />
+   227→          <label htmlFor={`day-${day}`} className="text-sm font-semibold">
+   228→            {JALALI_WEEKDAYS[day]}
+   229→          </label>
+   230→          {schedule.active && schedule.ranges.length > 0 && (
+   231→            <Badge variant="outline" className="text-[11px] text-muted-foreground">
+   232→              {toFa(schedule.ranges.length)} بازه
+   233→            </Badge>
+   234→          )}
+   235→        </div>
+   236→        {schedule.active && (
+   237→          <Button type="button" variant="outline" size="sm" className="h-8" onClick={onAddRange} disabled={schedule.ranges.length >= DRAFT_MAX_RANGES}>
+   238→            <Plus className="size-3.5" aria-hidden />
+   239→            افزودن بازه
+   240→          </Button>
+   241→        )}
+   242→      </CardHeader>
+   243→      <CardContent className="space-y-2">
+   244→        {!schedule.active ? (
+   245→          <p className="rounded-xl border border-dashed p-3 text-xs text-muted-foreground">این روز غیرفعال است و نوبتی رزرو نمی‌شود.</p>
+   246→        ) : schedule.ranges.length === 0 ? (
+   247→          <p className="rounded-xl border border-dashed p-3 text-xs text-muted-foreground">
+   248→            هنوز بازه‌ای ثبت نشده؛ «افزودن بازه» را بزنید.
+   249→          </p>
+   250→        ) : (
+   251→          schedule.ranges.map((r) => (
+   252→            <RangeRow
+   253→              key={r.id}
+   254→              range={r}
+   255→              canRemove={schedule.ranges.length > 1}
+   256→              onChange={(patch) => onUpdateRange(r.id, patch)}
+   257→              onRemove={() => onRemoveRange(r.id)}
+   258→            />
+   259→          ))
+   260→        )}
+   261→        {errors && errors.length > 0 && (
+   262→          <ul className="space-y-1 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-600 dark:text-rose-400" role="alert">
+   263→            {errors.map((e, i) => (
+   264→              <li key={i}>• {e}</li>
+   265→            ))}
+   266→          </ul>
+   267→        )}
+   268→      </CardContent>
+   269→    </Card>
+   270→  );
+   271→}
+   272→
+   273→/* ------------------------- off-days ------------------------- */
+   274→
+   275→const offDaySchema = z
+   276→  .object({
+   277→    startDate: z.string().min(1, "تاریخ شروع را انتخاب کنید"),
+   278→    endDate: z.string().min(1, "تاریخ پایان را انتخاب کنید"),
+   279→    reason: z.string().trim().min(3, "دلیل تعطیلی را وارد کنید"),
+   280→  })
+   281→  .refine((d) => d.endDate >= d.startDate, {
+   282→    message: "تاریخ پایان باید برابر یا بعد از تاریخ شروع باشد",
+   283→    path: ["endDate"],
+   284→  });
+   285→
+   286→type OffDayForm = z.infer<typeof offDaySchema>;
+   287→
+   288→function OffDaysCard({
+   289→  draftOffDays,
+   290→  savedIds,
+   291→  onAdd,
+   292→  onRemove,
+   293→}: {
+   294→  draftOffDays: OffDay[];
+   295→  savedIds: Set<string>;
+   296→  onAdd: (offDay: OffDay) => void;
+   297→  onRemove: (id: string) => void;
+   298→}) {
+   299→  const [confirmId, setConfirmId] = useState<string | null>(null);
+   300→  const form = useForm<OffDayForm>({
+   301→    resolver: zodResolver(offDaySchema),
+   302→    defaultValues: { startDate: "", endDate: "", reason: "" },
+   303→  });
+   304→
+   305→  const submit = (values: OffDayForm) => {
+   306→    onAdd({ id: genLocalId("off"), ...values });
+   307→    form.reset();
+   308→    toast.success("تعطیلی به پیش‌نویس اضافه شد", { description: "برای اعمال در رزرو بیماران، «ذخیره تقویم» را بزنید." });
+   309→  };
+   310→
+   311→  return (
+   312→    <Card>
+   313→      <CardHeader className="pb-3">
+   314→        <CardTitle className="flex items-center gap-2 text-base">
+   315→          <CalendarOff className="size-4 text-primary" aria-hidden />
+   316→          تعطیلات و مرخصی‌ها
+   317→        </CardTitle>
+   318→        <CardDescription className="text-xs">در این روزها هیچ نوبتی رزرو نمی‌شود.</CardDescription>
+   319→      </CardHeader>
+   320→      <CardContent className="space-y-4">
+   321→        {draftOffDays.length === 0 ? (
+   322→          <EmptyState icon={CalendarOff} title="تعطیلی ثبت نشده است" description="مرخصی یا تعطیلات خود را اضافه کنید تا بیماران نتوانند نوبت بگیرند." className="py-8" />
+   323→        ) : (
+   324→          <ul className="divide-y rounded-xl border">
+   325→            {draftOffDays.map((o) => (
+   326→              <li key={o.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 p-3">
+   327→                <div className="min-w-0 flex-1">
+   328→                  <p className="text-sm font-medium">
+   329→                    {faDateMedium(o.startDate)} تا {faDateMedium(o.endDate)}
+   330→                  </p>
+   331→                  <p className="text-xs text-muted-foreground">{o.reason}</p>
+   332→                </div>
+   333→                {!savedIds.has(o.id) && <Badge variant="outline" className="text-[10px] text-amber-600">پیش‌نویس</Badge>}
+   334→                <Button
+   335→                  variant="ghost"
+   336→                  size="icon"
+   337→                  className="size-8 text-rose-600 hover:text-rose-700"
+   338→                  aria-label={`حذف تعطیلی ${o.reason}`}
+   339→                  onClick={() => setConfirmId(o.id)}
+   340→                >
+   341→                  <Trash2 className="size-4" aria-hidden />
+   342→                </Button>
+   343→              </li>
+   344→            ))}
+   345→          </ul>
+   346→        )}
+   347→
+   348→        <Form {...form}>
+   349→          <form onSubmit={form.handleSubmit(submit)} className="space-y-3 rounded-xl border border-dashed p-3">
+   350→            <p className="flex items-center gap-1.5 text-sm font-medium">
+   351→              <Plus className="size-4 text-primary" aria-hidden />
+   352→              افزودن تعطیلی جدید
+   353→            </p>
+   354→            <div className="grid gap-3 sm:grid-cols-2">
+   355→              <FormField
+   356→                control={form.control}
+   357→                name="startDate"
+   358→                render={({ field }) => (
+   359→                  <FormItem className="space-y-1">
+   360→                    <FormLabel className="text-xs">از تاریخ</FormLabel>
+   361→                    <FormControl>
+   362→                      <JalaliDatePicker value={field.value || undefined} onChange={(iso) => field.onChange(iso ?? "")} placeholder="انتخاب تاریخ شروع" />
+   363→                    </FormControl>
+   364→                    <FormMessage />
+   365→                  </FormItem>
+   366→                )}
+   367→              />
+   368→              <FormField
+   369→                control={form.control}
+   370→                name="endDate"
+   371→                render={({ field }) => (
+   372→                  <FormItem className="space-y-1">
+   373→                    <FormLabel className="text-xs">تا تاریخ</FormLabel>
+   374→                    <FormControl>
+   375→                      <JalaliDatePicker value={field.value || undefined} onChange={(iso) => field.onChange(iso ?? "")} placeholder="انتخاب تاریخ پایان" />
+   376→                    </FormControl>
+   377→                    <FormMessage />
+   378→                  </FormItem>
+   379→                )}
+   380→              />
+   381→            </div>
+   382→            <FormField
+   383→              control={form.control}
+   384→              name="reason"
+   385→              render={({ field }) => (
+   386→                <FormItem className="space-y-1">
+   387→                  <FormLabel className="text-xs">دلیل</FormLabel>
+   388→                  <FormControl>
+   389→                    <Input {...field} placeholder="مثلاً: مرخصی استعلاجی، سفر کاری…" className="h-9 text-sm" aria-label="دلیل تعطیلی" />
+   390→                  </FormControl>
+   391→                  <FormMessage />
+   392→                </FormItem>
+   393→              )}
+   394→            />
+   395→            <Button type="submit" variant="outline" size="sm" className="h-9">
+   396→              افزودن به پیش‌نویس
+   397→            </Button>
+   398→          </form>
+   399→        </Form>
+   400→
+   401→        <AlertDialog open={!!confirmId} onOpenChange={(o) => !o && setConfirmId(null)}>
+   402→          <AlertDialogContent>
+   403→            <AlertDialogHeader>
+   404→              <AlertDialogTitle>حذف این تعطیلی از پیش‌نویس؟</AlertDialogTitle>
+   405→              <AlertDialogDescription>
+   406→                این تغییر فقط پس از «ذخیره تقویم» روی رزرو بیماران اعمال می‌شود و تا آن لحظه با «بازنشانی پیش‌نویس» قابل بازگشت است.
+   407→              </AlertDialogDescription>
+   408→            </AlertDialogHeader>
+   409→            <AlertDialogFooter>
+   410→              <AlertDialogCancel>انصراف</AlertDialogCancel>
+   411→              <AlertDialogAction
+   412→                className="bg-rose-600 text-white hover:bg-rose-700"
+   413→                onClick={() => {
+   414→                  if (confirmId) onRemove(confirmId);
+   415→                  setConfirmId(null);
+   416→                }}
+   417→              >
+   418→                حذف کن
+   419→              </AlertDialogAction>
+   420→            </AlertDialogFooter>
+   421→          </AlertDialogContent>
+   422→        </AlertDialog>
+   423→      </CardContent>
+   424→    </Card>
+   425→  );
+   426→}
+   427→
+   428→/* ------------------------- overrides ------------------------- */
+   429→
+   430→const overrideSchema = z.object({
+   431→  date: z.string().min(1, "تاریخ را انتخاب کنید"),
+   432→  note: z.string().trim().optional(),
+   433→  ranges: z
+   434→    .array(timeRangeSchema)
+   435→    .min(1, "حداقل یک بازه ساعات کاری وارد کنید")
+   436→    .max(2, "حداکثر دو بازه برای ساعت ویژه مجاز است")
+   437→    .superRefine((ranges, ctx) => {
+   438→      const sorted = [...ranges].sort((a, b) => timeToMinutes(a.start) - timeToMinutes(b.start));
+   439→      for (let i = 0; i < sorted.length; i++) {
+   440→        for (let j = i + 1; j < sorted.length; j++) {
+   441→          if (timeToMinutes(sorted[j].start) < timeToMinutes(sorted[i].end)) {
+   442→            ctx.addIssue({ code: "custom", message: "بازه‌ها نباید همپوشانی داشته باشند؛ لطفاً ساعات را اصلاح کنید" });
+   443→            return;
+   444→          }
+   445→        }
+   446→      }
+   447→    }),
+   448→});
+   449→
+   450→type OverrideForm = z.infer<typeof overrideSchema>;
+   451→
+   452→function OverridesCard({
+   453→  draftOverrides,
+   454→  savedIds,
+   455→  onAdd,
+   456→  onRemove,
+   457→}: {
+   458→  draftOverrides: DateOverride[];
+   459→  savedIds: Set<string>;
+   460→  onAdd: (override: DateOverride) => void;
+   461→  onRemove: (id: string) => void;
+   462→}) {
+   463→  const [confirmId, setConfirmId] = useState<string | null>(null);
+   464→  const form = useForm<OverrideForm>({
+   465→    resolver: zodResolver(overrideSchema),
+   466→    defaultValues: {
+   467→      date: "",
+   468→      note: "",
+   469→      ranges: [{ start: "09:00", end: "13:00", visitType: "in-person", duration: 15, buffer: 0, maxPerSlot: 2 }],
+   470→    },
+   471→  });
+   472→  const rangesArray = useFieldArray({ control: form.control, name: "ranges" });
+   473→
+   474→  const submit = (values: OverrideForm) => {
+   475→    onAdd({
+   476→      id: genLocalId("ovr"),
+   477→      date: values.date,
+   478→      note: values.note?.trim() ? values.note.trim() : undefined,
+   479→      ranges: values.ranges.map((r) => ({ ...r, id: genLocalId("tr") })),
+   480→    });
+   481→    form.reset({ date: "", note: "", ranges: [{ start: "09:00", end: "13:00", visitType: "in-person", duration: 15, buffer: 0, maxPerSlot: 2 }] });
+   482→    toast.success("ساعت ویژه به پیش‌نویس اضافه شد", { description: "برای اعمال در رزرو بیماران، «ذخیره تقویم» را بزنید." });
+   483→  };
+   484→
+   485→  return (
+   486→    <Card>
+   487→      <CardHeader className="pb-3">
+   488→        <CardTitle className="flex items-center gap-2 text-base">
+   489→          <Sparkles className="size-4 text-primary" aria-hidden />
+   490→          ساعات ویژه تاریخ خاص
+   491→        </CardTitle>
+   492→        <CardDescription className="text-xs">
+   493→          این ساعات جای برنامه هفتگی همان روز را می‌گیرد (مثلاً شیفت اضافه یا کوتاه).
+   494→        </CardDescription>
+   495→      </CardHeader>
+   496→      <CardContent className="space-y-4">
+   497→        {draftOverrides.length === 0 ? (
+   498→          <EmptyState icon={CalendarPlus} title="ساعت ویژه‌ای ثبت نشده است" description="برای روزهای خاص، ساعات کاری متفاوت تعریف کنید." className="py-8" />
+   499→        ) : (
+   500→          <ul className="divide-y rounded-xl border">
+   501→            {draftOverrides.map((o) => (
+   502→              <li key={o.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 p-3">
+   503→                <div className="min-w-0 flex-1">
+   504→                  <p className="text-sm font-medium">{faDateMedium(o.date)}</p>
+   505→                  <p className="text-xs text-muted-foreground">{o.ranges.map(rangeSummary).join(" • ")}</p>
+   506→                  {o.note && <p className="mt-0.5 text-[11px] text-muted-foreground/80">یادداشت: {o.note}</p>}
+   507→                </div>
+   508→                {!savedIds.has(o.id) && <Badge variant="outline" className="text-[10px] text-amber-600">پیش‌نویس</Badge>}
+   509→                <Button
+   510→                  variant="ghost"
+   511→                  size="icon"
+   512→                  className="size-8 text-rose-600 hover:text-rose-700"
+   513→                  aria-label="حذف ساعت ویژه"
+   514→                  onClick={() => setConfirmId(o.id)}
+   515→                >
+   516→                  <Trash2 className="size-4" aria-hidden />
+   517→                </Button>
+   518→              </li>
+   519→            ))}
+   520→          </ul>
+   521→        )}
+   522→
+   523→        <Form {...form}>
+   524→          <form onSubmit={form.handleSubmit(submit)} className="space-y-3 rounded-xl border border-dashed p-3">
+   525→            <p className="flex items-center gap-1.5 text-sm font-medium">
+   526→              <Plus className="size-4 text-primary" aria-hidden />
+   527→              افزودن ساعت ویژه
+   528→            </p>
+   529→            <div className="grid gap-3 sm:grid-cols-2">
+   530→              <FormField
+   531→                control={form.control}
+   532→                name="date"
+   533→                render={({ field }) => (
+   534→                  <FormItem className="space-y-1">
+   535→                    <FormLabel className="text-xs">تاریخ</FormLabel>
+   536→                    <FormControl>
+   537→                      <JalaliDatePicker value={field.value || undefined} onChange={(iso) => field.onChange(iso ?? "")} placeholder="انتخاب تاریخ" />
+   538→                    </FormControl>
+   539→                    <FormMessage />
+   540→                  </FormItem>
+   541→                )}
+   542→              />
+   543→              <FormField
+   544→                control={form.control}
+   545→                name="note"
+   546→                render={({ field }) => (
+   547→                  <FormItem className="space-y-1">
+   548→                    <FormLabel className="text-xs">یادداشت (اختیاری)</FormLabel>
+   549→                    <FormControl>
+   550→                      <Input {...field} placeholder="مثلاً: شیفت اضافه کلینیک" className="h-9 text-sm" aria-label="یادداشت ساعت ویژه" />
+   551→                    </FormControl>
+   552→                    <FormMessage />
+   553→                  </FormItem>
+   554→                )}
+   555→              />
+   556→            </div>
+   557→            <div className="space-y-2">
+   558→              {rangesArray.fields.map((f, i) => (
+   559→                <div key={f.id} className="space-y-2">
+   560→                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+   561→                    <FormField
+   562→                      control={form.control}
+   563→                      name={`ranges.${i}.start`}
+   564→                      render={({ field }) => (
+   565→                        <FormItem className="space-y-1">
+   566→                          <FormLabel className="text-xs">شروع بازه {toFa(i + 1)}</FormLabel>
+   567→                          <FormControl>
+   568→                            <Select value={field.value} onValueChange={field.onChange}>
+   569→                              <SelectTrigger className="h-8 text-xs" aria-label="ساعت شروع">
+   570→                                <SelectValue />
+   571→                              </SelectTrigger>
+   572→                              <SelectContent className="max-h-64">
+   573→                                {TIME_OPTIONS.map((t) => (
+   574→                                  <SelectItem key={t} value={t}>
+   575→                                    {faTime(t)}
+   576→                                  </SelectItem>
+   577→                                ))}
+   578→                              </SelectContent>
+   579→                            </Select>
+   580→                          </FormControl>
+   581→                          <FormMessage />
+   582→                        </FormItem>
+   583→                      )}
+   584→                    />
+   585→                    <FormField
+   586→                      control={form.control}
+   587→                      name={`ranges.${i}.end`}
+   588→                      render={({ field }) => (
+   589→                        <FormItem className="space-y-1">
+   590→                          <FormLabel className="text-xs">پایان بازه {toFa(i + 1)}</FormLabel>
+   591→                          <FormControl>
+   592→                            <Select value={field.value} onValueChange={field.onChange}>
+   593→                              <SelectTrigger className="h-8 text-xs" aria-label="ساعت پایان">
+   594→                                <SelectValue />
+   595→                              </SelectTrigger>
+   596→                              <SelectContent className="max-h-64">
+   597→                                {TIME_OPTIONS.map((t) => (
+   598→                                  <SelectItem key={t} value={t}>
+   599→                                    {faTime(t)}
+   600→                                  </SelectItem>
+   601→                                ))}
+   602→                              </SelectContent>
+   603→                            </Select>
+   604→                          </FormControl>
+   605→                          <FormMessage />
+   606→                        </FormItem>
+   607→                      )}
+   608→                    />
+   609→                    <FormField
+   610→                      control={form.control}
+   611→                      name={`ranges.${i}.visitType`}
+   612→                      render={({ field }) => (
+   613→                        <FormItem className="space-y-1">
+   614→                          <FormLabel className="text-xs">نوع ویزیت</FormLabel>
+   615→                          <FormControl>
+   616→                            <Select value={field.value} onValueChange={field.onChange}>
+   617→                              <SelectTrigger className="h-8 text-xs" aria-label="نوع ویزیت بازه">
+   618→                                <SelectValue />
+   619→                              </SelectTrigger>
+   620→                              <SelectContent>
+   621→                                <SelectItem value="in-person">حضوری</SelectItem>
+   622→                                <SelectItem value="online">آنلاین</SelectItem>
+   623→                              </SelectContent>
+   624→                            </Select>
+   625→                          </FormControl>
+   626→                          <FormMessage />
+   627→                        </FormItem>
+   628→                      )}
+   629→                    />
+   630→                    <FormField
+   631→                      control={form.control}
+   632→                      name={`ranges.${i}.duration`}
+   633→                      render={({ field }) => (
+   634→                        <FormItem className="space-y-1">
+   635→                          <FormLabel className="text-xs">مدت ویزیت</FormLabel>
+   636→                          <FormControl>
+   637→                            <Select value={String(field.value)} onValueChange={(v) => field.onChange(Number(v))}>
+   638→                              <SelectTrigger className="h-8 text-xs" aria-label="مدت ویزیت">
+   639→                                <SelectValue />
+   640→                              </SelectTrigger>
+   641→                              <SelectContent>
+   642→                                {DURATIONS.map((d) => (
+   643→                                  <SelectItem key={d} value={String(d)}>
+   644→                                    {toFa(d)} دقیقه
+   645→                                  </SelectItem>
+   646→                                ))}
+   647→                              </SelectContent>
+   648→                            </Select>
+   649→                          </FormControl>
+   650→                          <FormMessage />
+   651→                        </FormItem>
+   652→                      )}
+   653→                    />
+   654→                    <FormField
+   655→                      control={form.control}
+   656→                      name={`ranges.${i}.buffer`}
+   657→                      render={({ field }) => (
+   658→                        <FormItem className="space-y-1">
+   659→                          <FormLabel className="text-xs">فاصله بین نوبت‌ها</FormLabel>
+   660→                          <FormControl>
+   661→                            <Select value={String(field.value)} onValueChange={(v) => field.onChange(Number(v))}>
+   662→                              <SelectTrigger className="h-8 text-xs" aria-label="فاصله بین نوبت‌ها">
+   663→                                <SelectValue />
+   664→                              </SelectTrigger>
+   665→                              <SelectContent>
+   666→                                {BUFFER_OPTIONS.map((b) => (
+   667→                                  <SelectItem key={b} value={String(b)}>
+   668→                                    {b === 0 ? "بدون فاصله" : `${toFa(b)} دقیقه`}
+   669→                                  </SelectItem>
+   670→                                ))}
+   671→                              </SelectContent>
+   672→                            </Select>
+   673→                          </FormControl>
+   674→                          <FormMessage />
+   675→                        </FormItem>
+   676→                      )}
+   677→                    />
+   678→                    <FormField
+   679→                      control={form.control}
+   680→                      name={`ranges.${i}.maxPerSlot`}
+   681→                      render={({ field }) => (
+   682→                        <FormItem className="space-y-1">
+   683→                          <FormLabel className="text-xs">حداکثر بیمار در نوبت</FormLabel>
+   684→                          <FormControl>
+   685→                            <Select value={String(field.value)} onValueChange={(v) => field.onChange(Number(v))}>
+   686→                              <SelectTrigger className="h-8 text-xs" aria-label="حداکثر بیمار در هر نوبت">
+   687→                                <SelectValue />
+   688→                              </SelectTrigger>
+   689→                              <SelectContent>
+   690→                                {MAX_SLOT_OPTIONS.map((m) => (
+   691→                                  <SelectItem key={m} value={String(m)}>
+   692→                                    {toFa(m)} نفر
+   693→                                  </SelectItem>
+   694→                                ))}
+   695→                              </SelectContent>
+   696→                            </Select>
+   697→                          </FormControl>
+   698→                          <FormMessage />
+   699→                        </FormItem>
+   700→                      )}
+   701→                    />
+   702→                  </div>
+   703→                  {rangesArray.fields.length > 1 && (
+   704→                    <Button
+   705→                      type="button"
+   706→                      variant="ghost"
+   707→                      size="sm"
+   708→                      className="h-7 text-xs text-rose-600"
+   709→                      onClick={() => rangesArray.remove(i)}
+   710→                    >
+   711→                      <Trash2 className="size-3" aria-hidden />
+   712→                      حذف بازه {toFa(i + 1)}
+   713→                    </Button>
+   714→                  )}
+   715→                </div>
+   716→              ))}
+   717→              <div>
+   718→                {form.formState.errors.ranges?.message && (
+   719→                  <p className="mb-2 text-xs text-rose-600">{form.formState.errors.ranges.message}</p>
+   720→                )}
+   721→                {rangesArray.fields.length < 2 && (
+   722→                  <Button
+   723→                    type="button"
+   724→                    variant="outline"
+   725→                    size="sm"
+   726→                    className="h-8"
+   727→                    onClick={() =>
+   728→                      rangesArray.append({ start: "16:00", end: "19:00", visitType: "in-person", duration: 15, buffer: 0, maxPerSlot: 2 })
+   729→                    }
+   730→                  >
+   731→                    <Plus className="size-3.5" aria-hidden />
+   732→                    بازه دوم
+   733→                  </Button>
+   734→                )}
+   735→              </div>
+   736→            </div>
+   737→            <Button type="submit" variant="outline" size="sm" className="h-9">
+   738→              افزودن به پیش‌نویس
+   739→            </Button>
+   740→          </form>
+   741→        </Form>
+   742→
+   743→        <AlertDialog open={!!confirmId} onOpenChange={(o) => !o && setConfirmId(null)}>
+   744→          <AlertDialogContent>
+   745→            <AlertDialogHeader>
+   746→              <AlertDialogTitle>حذف این ساعت ویژه از پیش‌نویس؟</AlertDialogTitle>
+   747→              <AlertDialogDescription>
+   748→                این تغییر فقط پس از «ذخیره تقویم» اعمال می‌شود و تا آن لحظه قابل بازگشت است.
+   749→              </AlertDialogDescription>
+   750→            </AlertDialogHeader>
+   751→            <AlertDialogFooter>
+   752→              <AlertDialogCancel>انصراف</AlertDialogCancel>
+   753→              <AlertDialogAction
+   754→                className="bg-rose-600 text-white hover:bg-rose-700"
+   755→                onClick={() => {
+   756→                  if (confirmId) onRemove(confirmId);
+   757→                  setConfirmId(null);
+   758→                }}
+   759→              >
+   760→                حذف کن
+   761→              </AlertDialogAction>
+   762→            </AlertDialogFooter>
+   763→          </AlertDialogContent>
+   764→        </AlertDialog>
+   765→      </CardContent>
+   766→    </Card>
+   767→  );
+   768→}
+   769→
+   770→/* ------------------------- editor (keyed, remounts on apply/reset) ------------------------- */
+   771→
+   772→interface AvailabilityEditorProps {
+   773→  doctor: Doctor;
+   774→  appointments: Appointment[];
+   775→  loading: boolean;
+   776→  /** triggers a remount so drafts re-initialize from the fresh store */
+   777→  onApplied: () => void;
+   778→}
+   779→
+   780→function AvailabilityEditor({ doctor, appointments: allAppointments, loading, onApplied }: AvailabilityEditorProps) {
+   781→  const updateDoctorSchedule = useAppStore((s) => s.updateDoctorSchedule);
+   782→  const addDoctorOffDay = useAppStore((s) => s.addDoctorOffDay);
+   783→  const removeDoctorOffDay = useAppStore((s) => s.removeDoctorOffDay);
+   784→  const addDoctorOverride = useAppStore((s) => s.addDoctorOverride);
+   785→  const removeDoctorOverride = useAppStore((s) => s.removeDoctorOverride);
+   786→
+   787→  const [draft, setDraft] = useState<WeeklySchedule>(() => structuredClone(doctor.weeklySchedule));
+   788→  const [draftOffDays, setDraftOffDays] = useState<OffDay[]>(() => doctor.offDays.map((o) => ({ ...o })));
+   789→  const [draftOverrides, setDraftOverrides] = useState<DateOverride[]>(
+   790→    () => doctor.overrides.map((o) => ({ ...o, ranges: o.ranges.map((r) => ({ ...r })) }))
+   791→  );
+   792→  const [previewDate, setPreviewDate] = useState<string | undefined>(todayISO());
+   793→
+   794→  const savedOffIds = useMemo(() => new Set(doctor.offDays.map((o) => o.id)), [doctor.offDays]);
+   795→  const savedOvrIds = useMemo(() => new Set(doctor.overrides.map((o) => o.id)), [doctor.overrides]);
+   796→
+   797→  const errors = useMemo(() => validateWeeklySchedule(draft), [draft]);
+   798→  const errorCount = Object.keys(errors).length;
+   799→
+   800→  const mergedDoctor: Doctor = useMemo(
+   801→    () => ({ ...doctor, weeklySchedule: draft, offDays: draftOffDays, overrides: draftOverrides }),
+   802→    [doctor, draft, draftOffDays, draftOverrides]
+   803→  );
+   804→
+   805→  const conflicts = useMemo(
+   806→    () =>
+   807→      findConflictingAppointments(mergedDoctor, allAppointments).filter((a) => a.status !== "completed"),
+   808→    [mergedDoctor, allAppointments]
+   809→  );
+   810→
+   811→  const previewSlots = useMemo(
+   812→    () => (previewDate ? generateSlotsForDate(mergedDoctor, previewDate, allAppointments) : []),
+   813→    [mergedDoctor, previewDate, allAppointments]
+   814→  );
+   815→
+   816→  const previewOffDay = previewDate ? findOffDay(mergedDoctor, previewDate) : undefined;
+   817→  const previewOverride = previewDate ? mergedDoctor.overrides.find((o) => o.date === previewDate) : undefined;
+   818→
+   819→  /* draft mutators */
+   820→
+   821→  const toggleDay = (day: number, active: boolean) => {
+   822→    setDraft((prev) => {
+   823→      const current = prev[day] ?? { active: false, ranges: [] };
+   824→      return { ...prev, [day]: { ...current, active, ranges: active && current.ranges.length === 0 ? [newRange()] : current.ranges } };
+   825→    });
+   826→  };
+   827→
+   828→  const addRange = (day: number) => {
+   829→    setDraft((prev) => {
+   830→      const current = prev[day] ?? { active: true, ranges: [] };
+   831→      if (current.ranges.length >= DRAFT_MAX_RANGES) {
+   832→        toast.error(`حداکثر ${toFa(DRAFT_MAX_RANGES)} بازه در هر روز مجاز است`);
+   833→        return prev;
+   834→      }
+   835→      return { ...prev, [day]: { ...current, ranges: [...current.ranges, newRange()] } };
+   836→    });
+   837→  };
+   838→
+   839→  const removeRange = (day: number, rangeId: string) => {
+   840→    setDraft((prev) => {
+   841→      const current = prev[day];
+   842→      if (!current) return prev;
+   843→      return { ...prev, [day]: { ...current, ranges: current.ranges.filter((r) => r.id !== rangeId) } };
+   844→    });
+   845→  };
+   846→
+   847→  const updateRange = (day: number, rangeId: string, patch: Partial<TimeRange>) => {
+   848→    setDraft((prev) => {
+   849→      const current = prev[day];
+   850→      if (!current) return prev;
+   851→      return { ...prev, [day]: { ...current, ranges: current.ranges.map((r) => (r.id === rangeId ? { ...r, ...patch } : r)) } };
+   852→    });
+   853→  };
+   854→
+   855→  const resetDrafts = () => {
+   856→    onApplied();
+   857→    toast.info("پیش\u200cنویس به وضعیت ذخیره\u200cشده بازگشت");
+   858→  };
+   859→
+   860→  const save = () => {
+   861→    if (errorCount > 0) {
+   862→      toast.error("ابتدا خطاهای تقویم را برطرف کنید");
+   863→      return;
+   864→    }
+   865→    updateDoctorSchedule(doctor.id, draft);
+   866→    const draftOffIds = new Set(draftOffDays.map((o) => o.id));
+   867→    for (const o of doctor.offDays) if (!draftOffIds.has(o.id)) removeDoctorOffDay(doctor.id, o.id);
+   868→    for (const o of draftOffDays) if (!doctor.offDays.some((x) => x.id === o.id)) addDoctorOffDay(doctor.id, o);
+   869→    const draftOvrIds = new Set(draftOverrides.map((o) => o.id));
+   870→    for (const o of doctor.overrides) if (!draftOvrIds.has(o.id)) removeDoctorOverride(doctor.id, o.id);
+   871→    for (const o of draftOverrides) if (!doctor.overrides.some((x) => x.id === o.id)) addDoctorOverride(doctor.id, o);
+   872→    toast.success("تقویم شما به\u200cروزرسانی شد و در رزرو بیماران اعمال می\u200cشود");
+   873→    onApplied();
+   874→  };
+   875→
+   876→  const previewEmptySlots = previewSlots.filter((s) => s.remaining > 0);
+   877→
+   878→  return (
+   879→    <div className="space-y-6">
+   880→      <PageHeader
+   881→        title="روزها و ساعات کاری"
+   882→        description="برنامه هفتگی، تعطیلات و ساعات ویژه شما؛ همه تغییرات ابتدا به\u200cصورت پیش\u200cنویس ذخیره می\u200cشوند."
+   883→        loading={loading}
+   884→        actions={
+   885→          <>
+   886→            <Button variant="outline" size="sm" onClick={resetDrafts}>
+   887→              <RotateCcw className="size-4" aria-hidden />
+   888→              بازنشانی پیش\u200cنویس
+   889→            </Button>
+   890→            <Button size="sm" onClick={save} disabled={errorCount > 0 || loading}>
+   891→              <Save className="size-4" aria-hidden />
+   892→              ذخیره تقویم
+   893→            </Button>
+   894→          </>
+   895→        }
+   896→      />
+   897→
+   898→      {errorCount > 0 && (
+   899→        <Alert variant="destructive">
+   900→          <TriangleAlert className="size-4" aria-hidden />
+   901→          <AlertTitle>تقویم ذخیره نمی\u200cشود تا خطاها برطرف شوند</AlertTitle>
+   902→          <AlertDescription>
+   903→            {Object.entries(errors)
+   904→              .map(([day, msgs]) => `${day}: ${msgs[0]}`)
+   905→              .join(" — ")}
+   906→          </AlertDescription>
+   907→        </Alert>
+   908→      )}
+   909→
+   910→      {conflicts.length > 0 && (
+   911→        <Alert variant="destructive">
+   912→          <TriangleAlert className="size-4" aria-hidden />
+   913→          <AlertTitle>{`تضاد با ${toFa(conflicts.length)} نوبت رزروشده`}</AlertTitle>
+   914→          <AlertDescription>
+   915→            <p className="mb-1">با این تغییرات، نوبت\u200cهای رزروشده زیر دیگر در ساعات کاری نمی\u200cگنجند؛ با ذخیره تقویم این نوبت\u200cها بدون جایگزین می\u200cمانند:</p>
+   916→            <ul className="list-inside list-disc space-y-0.5 text-xs">
+   917→              {conflicts.slice(0, 4).map((a) => (
+   918→                <li key={a.id}>
+   919→                  {toFa(a.code)} — {faDateMedium(a.date)} ساعت {faTime(a.time)}
+   920→                </li>
+   921→              ))}
+   922→              {conflicts.length > 4 && <li>…و {toFa(conflicts.length - 4)} مورد دیگر</li>}
+   923→            </ul>
+   924→          </AlertDescription>
+   925→        </Alert>
+   926→      )}
+   927→
+   928→      <div className="grid gap-4 xl:grid-cols-3">
+   929→        {/* weekly editor */}
+   930→        <section className="space-y-4 xl:col-span-2" aria-label="برنامه هفتگی">
+   931→          {JALALI_WEEKDAYS.map((label, day) => (
+   932→            <WeekdayEditor
+   933→              key={day}
+   934→              day={day}
+   935→              schedule={draft[day] ?? { active: false, ranges: [] }}
+   936→              errors={errors[label]}
+   937→              onToggle={(active) => toggleDay(day, active)}
+   938→              onAddRange={() => addRange(day)}
+   939→              onRemoveRange={(rangeId) => removeRange(day, rangeId)}
+   940→              onUpdateRange={(rangeId, patch) => updateRange(day, rangeId, patch)}
+   941→            />
+   942→          ))}
+   943→        </section>
+   944→
+   945→        {/* live preview */}
+   946→        <section className="space-y-4" aria-label="پیش\u200cنمایش زنده نوبت\u200cها">
+   947→          <Card>
+   948→            <CardHeader className="pb-3">
+   949→              <CardTitle className="flex items-center gap-2 text-base">
+   950→                <Clock className="size-4 text-primary" aria-hidden />
+   951→                پیش\u200cنمایش زنده نوبت\u200cها
+   952→              </CardTitle>
+   953→              <CardDescription className="text-xs">نوبت\u200cهای این تاریخ بر اساس پیش\u200cنویس فعلی شما.</CardDescription>
+   954→            </CardHeader>
+   955→            <CardContent className="space-y-3">
+   956→              <JalaliDatePicker
+   957→                value={previewDate}
+   958→                onChange={(iso) => setPreviewDate(iso ?? todayISO())}
+   959→                aria-label="تاریخ پیش\u200cنمایش"
+   960→                placeholder="انتخاب تاریخ"
+   961→              />
+   962→              {loading ? (
+   963→                <div className="h-40 animate-pulse rounded-xl bg-muted" />
+   964→              ) : previewOffDay && !previewOverride ? (
+   965→                <EmptyState icon={CalendarOff} title="این روز تعطیل است" description={`دلیل: ${previewOffDay.reason}`} className="py-10" />
+   966→              ) : previewSlots.length === 0 ? (
+   967→                <EmptyState icon={CalendarClock} title="در این تاریخ ساعات کاری ثبت نشده است" description="برنامه این روز هفته را فعال کنید یا ساعت ویژه تعریف کنید." className="py-10" />
+   968→              ) : (
+   969→                <>
+   970→                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+   971→                    {previewOverride && <Badge variant="outline" className="text-[10px] text-violet-600">ساعت ویژه</Badge>}
+   972→                    <span>
+   973→                      {toFa(previewSlots.length)} نوبت — {toFa(previewEmptySlots.length)} خالی — {toFa(previewSlots.length - previewEmptySlots.length)} رزروشده/تکمیل
+   974→                    </span>
+   975→                  </div>
+   976→                  <div className="flex max-h-96 flex-wrap gap-1.5 overflow-y-auto" aria-label="نوبت\u200cهای پیش\u200cنمایش">
+   977→                    {previewSlots.map((s) => (
+   978→                      <span
+   979→                        key={s.time}
+   980→                        title={`ظرفیت آزاد: ${toFa(s.remaining)} از ${toFa(s.maxPerSlot)}`}
+   981→                        className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium tabular-nums ${
+   982→                          s.remaining === 0
+   983→                            ? "border-muted bg-muted/60 text-muted-foreground line-through"
+   984→                            : s.bookedCount > 0
+   985→                              ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+   986→                              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+   987→                        }`}
+   988→                      >
+   989→                        {faTime(s.time)}
+   990→                        <span className="text-[10px] font-normal">
+   991→                          {s.remaining === 0 ? "تکمیل" : `${toFa(s.remaining)}/${toFa(s.maxPerSlot)}`}
+   992→                        </span>
+   993→                      </span>
+   994→                    ))}
+   995→                  </div>
+   996→                  <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+   997→                    <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+   998→                    اعداد هر نوبت، ظرفیت آزاد از کل ظرفیت است؛ خط\u200cخورده\u200cها تکمیل شده\u200cاند.
+   999→                  </p>
+  1000→                </>
+  1001→              )}
+  1002→            </CardContent>
+  1003→          </Card>
+  1004→
+  1005→          <OffDaysCard
+  1006→            draftOffDays={draftOffDays}
+  1007→            savedIds={savedOffIds}
+  1008→            onAdd={(o) => setDraftOffDays((prev) => [...prev, o])}
+  1009→            onRemove={(id) => setDraftOffDays((prev) => prev.filter((o) => o.id !== id))}
+  1010→          />
+  1011→        </section>
+  1012→      </div>
+  1013→
+  1014→      <Separator />
+  1015→
+  1016→      <OverridesCard
+  1017→        draftOverrides={draftOverrides}
+  1018→        savedIds={savedOvrIds}
+  1019→        onAdd={(o) => setDraftOverrides((prev) => [...prev, o])}
+  1020→        onRemove={(id) => setDraftOverrides((prev) => prev.filter((o) => o.id !== id))}
+  1021→      />
+  1022→    </div>
+  1023→  );
+  1024→}
+  1025→
+  1026→/* ------------------------- main content ------------------------- */
+  1027→
+  1028→export function AvailabilityContent() {
+  1029→  const loading = useDemoLoading();
+  1030→  const { doctor } = useDoctorPanel();
+  1031→  const allAppointments = useAppStore((s) => s.appointments);
+  1032→  const [resetKey, setResetKey] = useState(0);
+  1033→
+  1034→  if (!doctor) {
+  1035→    return <PageHeader title="روزها و ساعات کاری" description="برنامه هفتگی شما" loading={loading} />;
+  1036→  }
+  1037→
+  1038→  return (
+  1039→    <AvailabilityEditor
+  1040→      key={resetKey}
+  1041→      doctor={doctor}
+  1042→      appointments={allAppointments}
+  1043→      loading={loading}
+  1044→      onApplied={() => setResetKey((k) => k + 1)}
+  1045→    />
+  1046→  );
+  1047→}
+  1048→

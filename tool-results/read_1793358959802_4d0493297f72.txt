@@ -1,0 +1,702 @@
+    60→    60→  time: string;
+    61→    61→  visitType: VisitType;
+    62→    62→  reason?: string;
+    63→    63→  payNow?: boolean; // mock payment success
+    64→    64→}
+    65→    65→
+    66→    66→export interface CreateConsultationInput {
+    67→    67→  doctorId: string;
+    68→    68→  patientId: string;
+    69→    69→  type: "text" | "phone" | "video";
+    70→    70→  subject: string;
+    71→    71→  question: string;
+    72→    72→}
+    73→    73→
+    74→    74→export interface CreateLabOrderInput {
+    75→    75→  patientId: string;
+    76→    76→  labId: string;
+    77→    77→  doctorId?: string;
+    78→    78→  tests: LabOrderTest[];
+    79→    79→  homeSampling: boolean;
+    80→    80→  prescriptionFile?: Attachment;
+    81→    81→}
+    82→    82→
+    83→    83→export interface CreateTicketInput {
+    84→    84→  creatorId: string;
+    85→    85→  creatorRole: "patient" | "doctor";
+    86→    86→  creatorName: string;
+    87→    87→  subject: string;
+    88→    88→  category: TicketCategory;
+    89→    89→  priority: TicketPriority;
+    90→    90→  body: string;
+    91→    91→  relatedEntity?: [Ticket["relatedEntityType"], string];
+    92→    92→}
+    93→    93→
+    94→    94→export interface SettlementRequestInput {
+    95→    95→  doctorId: string;
+    96→    96→  amount: number;
+    97→    97→  bankName: string;
+    98→    98→  iban: string;
+    99→    99→}
+   100→   100→
+   101→   101→/* ------------------------------ store type ------------------------------ */
+   102→   102→
+   103→   103→export interface AppStore extends DbSeed {
+   104→   104→  _hasHydrated: boolean;
+   105→   105→  setHasHydrated: (v: boolean) => void;
+   106→   106→
+   107→   107→  /* meta */
+   108→   108→  addAuditLog: (entry: { actorName: string; actorRole: Role; action: string; target: string }) => void;
+   109→   109→  resetDemoData: () => void;
+   110→   110→
+   111→   111→  /* notifications */
+   112→   112→  pushNotification: (n: { role: Role; userId?: string; title: string; body: string; link?: string }) => void;
+   113→   113→  markNotificationRead: (id: string) => void;
+   114→   114→  markAllNotificationsRead: (role: Role, userId?: string) => void;
+   115→   115→
+   116→   116→  /* appointments */
+   117→   117→  bookAppointment: (input: BookAppointmentInput) => Appointment;
+   118→   118→  updateAppointment: (id: string, patch: Partial<Appointment>) => void;
+   119→   119→  setAppointmentStatus: (id: string, status: AppointmentStatus, actorName?: string) => void;
+   120→   120→  rescheduleAppointment: (id: string, date: string, time: string) => void;
+   121→   121→
+   122→   122→  /* consultations */
+   123→   123→  createConsultation: (input: CreateConsultationInput) => { consultation: Consultation };
+   124→   124→  addConsultationMessage: (
+   125→   125→    consultationId: string,
+   126→   126→    msg: { sender: "patient" | "doctor"; text: string; attachments?: Attachment[] }
+   127→   127→  ) => void;
+   128→   128→  setConsultationStatus: (id: string, status: Consultation["status"]) => void;
+   129→   129→  setConsultationPrescription: (id: string, note: string) => void;
+   130→   130→
+   131→   131→  /* reviews */
+   132→   132→  addReview: (input: { doctorId: string; patientId: string; appointmentId?: string; rating: number; comment: string }) => void;
+   133→   133→  replyToReview: (id: string, reply: string) => void;
+   134→   134→  setReviewStatus: (id: string, status: ModerationStatus, actorName?: string) => void;
+   135→   135→
+   136→   136→  /* lab orders */
+   137→   137→  createLabOrder: (input: CreateLabOrderInput) => LabOrder;
+   138→   138→  setLabOrderStatus: (id: string, status: LabOrderStatus) => void;
+   139→   139→  payLabOrder: (id: string) => void;
+   140→   140→
+   141→   141→  /* wallet & finance */
+   142→   142→  topupWallet: (patientId: string, amount: number, discountCode?: string) => void;
+   143→   143→
+   144→   144→  /* settlements */
+   145→   145→  requestSettlement: (input: SettlementRequestInput) => Settlement;
+   146→   146→  updateSettlement: (id: string, patch: Partial<Settlement>, actorName?: string) => void;
+   147→   147→
+   148→   148→  /* tickets */
+   149→   149→  createTicket: (input: CreateTicketInput) => Ticket;
+   150→   150→  addTicketMessage: (
+   151→   151→    ticketId: string,
+   152→   152→    msg: { senderId: string; senderRole: Role; senderName: string; text: string; internal?: boolean; attachments?: Attachment[] }
+   153→   153→  ) => void;
+   154→   154→  updateTicket: (id: string, patch: Partial<Pick<Ticket, "status" | "priority" | "category" | "assignedAgentId">>) => void;
+   155→   155→  closeTicket: (id: string, actorName?: string) => void;
+   156→   156→  reopenTicket: (id: string) => void;
+   157→   157→  rateTicket: (id: string, rating: number, comment?: string) => void;
+   158→   158→
+   159→   159→  /* doctors */
+   160→   160→  updateDoctor: (id: string, patch: Partial<Doctor>) => void;
+   161→   161→  updateDoctorSchedule: (id: string, schedule: WeeklySchedule) => void;
+   162→   162→  addDoctorOffDay: (id: string, offDay: Omit<OffDay, "id">) => void;
+   163→   163→  removeDoctorOffDay: (id: string, offDayId: string) => void;
+   164→   164→  addDoctorOverride: (id: string, override: Omit<DateOverride, "id">) => void;
+   165→   165→  removeDoctorOverride: (id: string, overrideId: string) => void;
+   166→   166→  setDoctorVerification: (id: string, status: VerificationStatus, actorName: string, reason?: string) => void;
+   167→   167→  setDoctorAccountStatus: (id: string, status: Doctor["accountStatus"], actorName: string) => void;
+   168→   168→
+   169→   169→  /* patients */
+   170→   170→  updatePatient: (id: string, patch: Partial<Patient>) => void;
+   171→   171→  blockPatient: (id: string, blocked: boolean, actorName: string) => void;
+   172→   172→  addFamilyMember: (patientId: string, member: Omit<FamilyMember, "id">) => void;
+   173→   173→  updateFamilyMember: (patientId: string, memberId: string, patch: Partial<FamilyMember>) => void;
+   174→   174→  removeFamilyMember: (patientId: string, memberId: string) => void;
+   175→   175→  toggleFavorite: (patientId: string, doctorId: string) => void;
+   176→   176→
+   177→   177→  /* content */
+   178→   178→  upsertArticle: (article: Article) => void;
+   179→   179→  deleteArticle: (id: string) => void;
+   180→   180→  upsertBanner: (banner: Banner) => void;
+   181→   181→  deleteBanner: (id: string) => void;
+   182→   182→  upsertSpecialty: (specialty: Specialty) => void;
+   183→   183→  deleteSpecialty: (id: string) => void;
+   184→   184→  upsertService: (service: ClinicServiceItem) => void;
+   185→   185→  deleteService: (id: string) => void;
+   186→   186→  upsertCenter: (center: MedicalCenter) => void;
+   187→   187→  deleteCenter: (id: string) => void;
+   188→   188→  upsertDiscountCode: (code: DiscountCode) => void;
+   189→   189→  deleteDiscountCode: (id: string) => void;
+   190→   190→
+   191→   191→  /* staff */
+   192→   192→  upsertStaffUser: (user: StaffUser) => void;
+   193→   193→  updateStaffPermissions: (id: string, permissions: Record<string, boolean>) => void;
+   194→   194→  toggleStaffActive: (id: string, actorName: string) => void;
+   195→   195→
+   196→   196→  /* canned & faq */
+   197→   197→  upsertCannedReply: (reply: CannedReply) => void;
+   198→   198→  deleteCannedReply: (id: string) => void;
+   199→   199→  upsertFaq: (faq: Faq) => void;
+   200→   200→  deleteFaq: (id: string) => void;
+   201→   201→}
+   202→   202→
+   203→   203→/* ------------------------------ helpers ------------------------------ */
+   204→   204→
+   205→   205→const genId = (prefix: string) => `${prefix}-${Math.random().toString(36).slice(2, 8)}${Date.now() % 1000}`;
+   206→   206→let codeSeq = Math.floor(Math.random() * 4000) + 90000;
+   207→   207→const genCode = (prefix: string) => `${prefix}-${++codeSeq}`;
+   208→   208→
+   209→   209→/* ------------------------------ store ------------------------------ */
+   210→   210→
+   211→   211→const seed = buildSeed();
+   212→   212→
+   213→   213→export const useAppStore = create<AppStore>()(
+   214→   214→  persist(
+   215→   215→    (set, get) => ({
+   216→   216→      ...seed,
+   217→   217→      _hasHydrated: false,
+   218→   218→      setHasHydrated: (v) => set({ _hasHydrated: v }),
+   219→   219→
+   220→   220→      /* ------------------------------ meta ------------------------------ */
+   221→   221→      addAuditLog: (entry) =>
+   222→   222→        set((s) => ({
+   223→   223→          auditLog: [{ id: genId("aud"), atISO: nowISODateTime(), ...entry }, ...s.auditLog],
+   224→   224→        })),
+   225→   225→
+   226→   226→      resetDemoData: () => {
+   227→   227→        const fresh = buildSeed();
+   228→   228→        set({ ...fresh });
+   229→   229→      },
+   230→   230→
+   231→   231→      /* -------------------------- notifications -------------------------- */
+   232→   232→      pushNotification: (n) =>
+   233→   233→        set((s) => ({
+   234→   234→          notifications: [
+   235→   235→            { id: genId("ntf"), read: false, createdAtISO: nowISODateTime(), ...n },
+   236→   236→            ...s.notifications,
+   237→   237→          ],
+   238→   238→        })),
+   239→   239→      markNotificationRead: (id) =>
+   240→   240→        set((s) => ({
+   241→   241→          notifications: s.notifications.map((n) => (n.id === id ? { ...n, read: true } : n)),
+   242→   242→        })),
+   243→   243→      markAllNotificationsRead: (role, userId) =>
+   244→   244→        set((s) => ({
+   245→   245→          notifications: s.notifications.map((n) =>
+   246→   246→            n.role === role && (n.userId ? n.userId === userId || n.userId === undefined : true) ? { ...n, read: true } : n
+   247→   247→          ),
+   248→   248→        })),
+   249→   249→
+   250→   250→      /* --------------------------- appointments --------------------------- */
+   251→   251→      bookAppointment: (input) => {
+   252→   252→        const doctor = get().doctors.find((d) => d.id === input.doctorId)!;
+   253→   253→        const feeMap: Record<VisitType, number> = {
+   254→   254→          "in-person": doctor.visitFee,
+   255→   255→          phone: doctor.phoneFee,
+   256→   256→          text: doctor.textFee,
+   257→   257→          video: doctor.videoFee,
+   258→   258→        };
+   259→   259→        const fee = feeMap[input.visitType];
+   260→   260→        const appointment: Appointment = {
+   261→   261→          id: genId("apt"),
+   262→   262→          code: genCode("NO"),
+   263→   263→          doctorId: input.doctorId,
+   264→   264→          patientId: input.patientId,
+   265→   265→          forFamilyMember: input.forFamilyMember,
+   266→   266→          date: input.date,
+   267→   267→          time: input.time,
+   268→   268→          duration: input.visitType === "in-person" ? 15 : 20,
+   269→   269→          visitType: input.visitType,
+   270→   270→          status: input.payNow ? "confirmed" : "pending",
+   271→   271→          paymentStatus: input.payNow ? "paid" : "unpaid",
+   272→   272→          fee,
+   273→   273→          commission: Math.round(fee * (doctor.commissionRate / 100)),
+   274→   274→          reason: input.reason ?? "",
+   275→   275→          notes: "",
+   276→   276→          createdAtISO: nowISODateTime(),
+   277→   277→        };
+   278→   278→        const transaction: Transaction | null = input.payNow
+   279→   279→          ? {
+   280→   280→              id: genId("trx"),
+   281→   281→              code: genCode("TR"),
+   282→   282→              kind: input.visitType === "in-person" ? "appointment" : "consultation",
+   283→   283→              amount: fee,
+   284→   284→              direction: "in",
+   285→   285→              patientId: input.patientId,
+   286→   286→              doctorId: input.doctorId,
+   287→   287→              appointmentId: appointment.id,
+   288→   288→              status: "success",
+   289→   289→              description: `پرداخت نوبت ${appointment.code}`,
+   290→   290→              createdAtISO: nowISODateTime(),
+   291→   291→            }
+   292→   292→          : null;
+   293→   293→        set((s) => ({
+   294→   294→          appointments: [appointment, ...s.appointments],
+   295→   295→          transactions: transaction ? [transaction, ...s.transactions] : s.transactions,
+   296→   296→        }));
+   297→   297→        get().pushNotification({
+   298→   298→          role: "doctor",
+   299→   299→          userId: doctor.id,
+   300→   300→          title: "نوبت جدید ثبت شد",
+   301→   301→          body: `برای ${appointment.date} ساعت ${appointment.time} نوبت جدید ثبت شد.`,
+   302→   302→          link: "/doctor/calendar",
+   303→   303→        });
+   304→   304→        return appointment;
+   305→   305→      },
+   306→   306→
+   307→   307→      updateAppointment: (id, patch) =>
+   308→   308→        set((s) => ({ appointments: s.appointments.map((a) => (a.id === id ? { ...a, ...patch } : a)) })),
+   309→   309→
+   310→   310→      setAppointmentStatus: (id, status, actorName) => {
+   311→   311→        const appointment = get().appointments.find((a) => a.id === id);
+   312→   312→        set((s) => ({ appointments: s.appointments.map((a) => (a.id === id ? { ...a, status } : a)) }));
+   313→   313→        if (!appointment) return;
+   314→   314→        // refund side-effect on cancel of a paid appointment
+   315→   315→        if (status === "cancelled" && appointment.paymentStatus === "paid") {
+   316→   316→          const refund: Transaction = {
+   317→   317→            id: genId("trx"),
+   318→   318→            code: genCode("TR"),
+   319→   319→            kind: "refund",
+   320→   320→            amount: appointment.fee,
+   321→   321→            direction: "out",
+   322→   322→            patientId: appointment.patientId,
+   323→   323→            doctorId: appointment.doctorId,
+   324→   324→            appointmentId: appointment.id,
+   325→   325→            status: "success",
+   326→   326→            description: `بازگشت وجه نوبت لغوشده ${appointment.code}`,
+   327→   327→            createdAtISO: nowISODateTime(),
+   328→   328→          };
+   329→   329→          set((s) => ({
+   330→   330→            transactions: [refund, ...s.transactions],
+   331→   331→            appointments: s.appointments.map((a) => (a.id === id ? { ...a, paymentStatus: "refunded" } : a)),
+   332→   332→          }));
+   333→   333→        }
+   334→   334→        if (status === "completed") {
+   335→   335→          get().pushNotification({
+   336→   336→            role: "patient",
+   337→   337→            userId: appointment.patientId,
+   338→   338→            title: "ویزیت شما انجام شد",
+   339→   339→            body: `نوبت ${appointment.code} با موفقیت انجام شد. می‌توانید نظر خود را ثبت کنید.`,
+   340→   340→            link: "/patient/appointments",
+   341→   341→          });
+   342→   342→        }
+   343→   343→      },
+   344→   344→
+   345→   345→      rescheduleAppointment: (id, date, time) => {
+   346→   346→        set((s) => ({ appointments: s.appointments.map((a) => (a.id === id ? { ...a, date, time, status: "pending" } : a)) }));
+   347→   347→        const appointment = get().appointments.find((a) => a.id === id);
+   348→   348→        if (appointment) {
+   349→   349→          get().pushNotification({
+   350→   350→            role: "doctor",
+   351→   351→            userId: appointment.doctorId,
+   352→   352→            title: "تغییر زمان نوبت",
+   353→   353→            body: `نوبت ${appointment.code} به ${date} ساعت ${time} تغییر یافت.`,
+   354→   354→            link: "/doctor/calendar",
+   355→   355→          });
+   356→   356→        }
+   357→   357→      },
+   358→   358→
+   359→   359→      /* --------------------------- consultations --------------------------- */
+   360→   360→      createConsultation: (input) => {
+   361→   361→        const doctor = get().doctors.find((d) => d.id === input.doctorId)!;
+   362→   362→        const fee = input.type === "text" ? doctor.textFee : input.type === "phone" ? doctor.phoneFee : doctor.videoFee;
+   363→   363→        const createdAtISO = nowISODateTime();
+   364→   364→        const consultation = {
+   365→   365→          id: genId("con"),
+   366→   366→          code: genCode("CO"),
+   367→   367→          doctorId: input.doctorId,
+   368→   368→          patientId: input.patientId,
+   369→   369→          type: input.type,
+   370→   370→          status: "waiting" as const,
+   371→   371→          subject: input.subject,
+   372→   372→          question: input.question,
+   373→   373→          messages: [
+   374→   374→            {
+   375→   375→              id: genId("msg"),
+   376→   376→              sender: "patient" as const,
+   377→   377→              text: `${input.subject}\n${input.question}`,
+   378→   378→              attachments: [],
+   379→   379→              sentAtISO: createdAtISO,
+   380→   380→            },
+   381→   381→          ],
+   382→   382→          fee,
+   383→   383→          paymentStatus: "paid" as const,
+   384→   384→          createdAtISO,
+   385→   385→          deadlineISO: addDaysISO(todayISO(), 1) + "T" + createdAtISO.split("T")[1],
+   386→   386→        };
+   387→   387→        const transaction: Transaction = {
+   388→   388→          id: genId("trx"),
+   389→   389→          code: genCode("TR"),
+   390→   390→          kind: "consultation",
+   391→   391→          amount: fee,
+   392→   392→          direction: "in",
+   393→   393→          patientId: input.patientId,
+   394→   394→          doctorId: input.doctorId,
+   395→   395→          consultationId: consultation.id,
+   396→   396→          status: "success",
+   397→   397→          description: `پرداخت مشاوره ${consultation.code}`,
+   398→   398→          createdAtISO,
+   399→   399→        };
+   400→   400→        set((s) => ({ consultations: [consultation, ...s.consultations], transactions: [transaction, ...s.transactions] }));
+   401→   401→        get().pushNotification({
+   402→   402→          role: "doctor",
+   403→   403→          userId: input.doctorId,
+   404→   404→          title: "مشاوره جدید",
+   405→   405→          body: "یک مشاوره جدید در انتظار پاسخ شماست.",
+   406→   406→          link: "/doctor/consultations",
+   407→   407→        });
+   408→   408→        return { consultation };
+   409→   409→      },
+   410→   410→
+   411→   411→      addConsultationMessage: (consultationId, msg) => {
+   412→   412→        const full = {
+   413→   413→          id: genId("msg"),
+   414→   414→          sender: msg.sender,
+   415→   415→          text: msg.text,
+   416→   416→          attachments: msg.attachments ?? [],
+   417→   417→          sentAtISO: nowISODateTime(),
+   418→   418→        };
+   419→   419→        set((s) => ({
+   420→   420→          consultations: s.consultations.map((c) =>
+   421→   421→            c.id === consultationId
+   422→   422→              ? {
+   423→   423→                  ...c,
+   424→   424→                  messages: [...c.messages, full],
+   425→   425→                  status: msg.sender === "doctor" && c.status === "waiting" ? "answered" : c.status,
+   426→   426→                }
+   427→   427→              : c
+   428→   428→          ),
+   429→   429→        }));
+   430→   430→        const consultation = get().consultations.find((c) => c.id === consultationId);
+   431→   431→        if (consultation && msg.sender === "doctor") {
+   432→   432→          get().pushNotification({
+   433→   433→            role: "patient",
+   434→   434→            userId: consultation.patientId,
+   435→   435→            title: "پاسخ مشاوره",
+   436→   436→            body: `پزشک به مشاوره ${consultation.code} پاسخ داد.`,
+   437→   437→            link: "/patient/consultations",
+   438→   438→          });
+   439→   439→        }
+   440→   440→      },
+   441→   441→
+   442→   442→      setConsultationStatus: (id, status) =>
+   443→   443→        set((s) => ({ consultations: s.consultations.map((c) => (c.id === id ? { ...c, status } : c)) })),
+   444→   444→
+   445→   445→      setConsultationPrescription: (id, note) =>
+   446→   446→        set((s) => ({ consultations: s.consultations.map((c) => (c.id === id ? { ...c, prescriptionNote: note } : c)) })),
+   447→   447→
+   448→   448→      /* ------------------------------ reviews ------------------------------ */
+   449→   449→      addReview: (input) => {
+   450→   450→        const review: Review = {
+   451→   451→          id: genId("rev"),
+   452→   452→          ...input,
+   453→   453→          status: "published",
+   454→   454→          createdAtISO: nowISODateTime(),
+   455→   455→        };
+   456→   456→        set((s) => ({
+   457→   457→          reviews: [review, ...s.reviews],
+   458→   458→          doctors: s.doctors.map((d) => {
+   459→   459→            if (d.id !== input.doctorId) return d;
+   460→   460→            const count = d.reviewCount + 1;
+   461→   461→            const rating = Math.round(((d.rating * d.reviewCount + input.rating) / count) * 10) / 10;
+   462→   462→            return { ...d, reviewCount: count, rating };
+   463→   463→          }),
+   464→   464→        }));
+   465→   465→        get().pushNotification({
+   466→   466→          role: "doctor",
+   467→   467→          userId: input.doctorId,
+   468→   468→          title: "نظر جدید ثبت شد",
+   469→   469→          body: "یک نظر جدید برای شما ثبت شد.",
+   470→   470→          link: "/doctor/reviews",
+   471→   471→        });
+   472→   472→      },
+   473→   473→
+   474→   474→      replyToReview: (id, reply) =>
+   475→   475→        set((s) => ({ reviews: s.reviews.map((r) => (r.id === id ? { ...r, reply } : r)) })),
+   476→   476→
+   477→   477→      setReviewStatus: (id, status, actorName) => {
+   478→   478→        set((s) => ({ reviews: s.reviews.map((r) => (r.id === id ? { ...r, status } : r)) }));
+   479→   479→        if (actorName && status !== "published") {
+   480→   480→          get().addAuditLog({ actorName, actorRole: "admin", action: status === "hidden" ? "مخفی‌سازی نظر" : "بررسی نظر", target: "مدیریت نظرات" });
+   481→   481→        }
+   482→   482→      },
+   483→   483→
+   484→   484→      /* ----------------------------- lab orders ----------------------------- */
+   485→   485→      createLabOrder: (input) => {
+   486→   486→        const totalFee = input.tests.reduce((sum, t) => sum + t.price, 0);
+   487→   487→        const order: LabOrder = {
+   488→   488→          id: genId("lab"),
+   489→   489→          code: genCode("LB"),
+   490→   490→          patientId: input.patientId,
+   491→   491→          labId: input.labId,
+   492→   492→          doctorId: input.doctorId,
+   493→   493→          tests: input.tests,
+   494→   494→          totalFee,
+   495→   495→          status: "registered",
+   496→   496→          paymentStatus: "unpaid",
+   497→   497→          prescriptionFile: input.prescriptionFile,
+   498→   498→          homeSampling: input.homeSampling,
+   499→   499→          history: [{ status: "registered", atISO: nowISODateTime() }],
+   500→   500→          createdAtISO: nowISODateTime(),
+   501→   501→        };
+   502→   502→        set((s) => ({ labOrders: [order, ...s.labOrders] }));
+   503→   503→        return order;
+   504→   504→      },
+   505→   505→
+   506→   506→      setLabOrderStatus: (id, status) => {
+   507→   507→        const order = get().labOrders.find((l) => l.id === id);
+   508→   508→        if (!order) return;
+   509→   509→        const already = order.history.some((h) => h.status === status);
+   510→   510→        set((s) => ({
+   511→   511→          labOrders: s.labOrders.map((l) =>
+   512→   512→            l.id === id
+   513→   513→              ? {
+   514→   514→                  ...l,
+   515→   515→                  status,
+   516→   516→                  paymentStatus: status === "paid" || (l.paymentStatus === "paid") ? "paid" : l.paymentStatus,
+   517→   517→                  history: already ? l.history : [...l.history, { status, atISO: nowISODateTime() }],
+   518→   518→                  resultNote: status === "received" && !l.resultNote ? "همه مقادیر در محدوده نرمال هستند؛ نتیجه تفصیلی در فایل PDF پیوست است." : l.resultNote,
+   519→   519→                }
+   520→   520→              : l
+   521→   521→          ),
+   522→   522→        }));
+   523→   523→        if (status === "received") {
+   524→   524→          get().pushNotification({
+   525→   525→            role: "patient",
+   526→   526→            userId: order.patientId,
+   527→   527→            title: "جواب آزمایش آماده شد",
+   528→   528→            body: `جواب آزمایش «${order.tests[0]?.name}» در بخش آزمایش‌ها قابل مشاهده است.`,
+   529→   529→            link: "/patient/labs",
+   530→   530→          });
+   531→   531→        }
+   532→   532→      },
+   533→   533→
+   534→   534→      payLabOrder: (id) => {
+   535→   535→        const order = get().labOrders.find((l) => l.id === id);
+   536→   536→        if (!order || order.paymentStatus === "paid") return;
+   537→   537→        const transaction: Transaction = {
+   538→   538→          id: genId("trx"),
+   539→   539→          code: genCode("TR"),
+   540→   540→          kind: "lab",
+   541→   541→          amount: order.totalFee,
+   542→   542→          direction: "in",
+   543→   543→          patientId: order.patientId,
+   544→   544→          labOrderId: order.id,
+   545→   545→          status: "success",
+   546→   546→          description: `پرداخت آزمایش ${order.code}`,
+   547→   547→          createdAtISO: nowISODateTime(),
+   548→   548→        };
+   549→   549→        set((s) => ({
+   550→   550→          transactions: [transaction, ...s.transactions],
+   551→   551→          labOrders: s.labOrders.map((l) =>
+   552→   552→            l.id === id
+   553→   553→              ? {
+   554→   554→                  ...l,
+   555→   555→                  paymentStatus: "paid",
+   556→   556→                  status: "paid",
+   557→   557→                  history: l.history.some((h) => h.status === "paid") ? l.history : [...l.history, { status: "paid", atISO: nowISODateTime() }],
+   558→   558→                }
+   559→   559→              : l
+   560→   560→          ),
+   561→   561→        }));
+   562→   562→      },
+   563→   563→
+   564→   564→      /* ---------------------------- wallet & finance ---------------------------- */
+   565→   565→      topupWallet: (patientId, amount, discountCode) => {
+   566→   566→        const patient = get().patients.find((p) => p.id === patientId);
+   567→   567→        const transaction: Transaction = {
+   568→   568→          id: genId("trx"),
+   569→   569→          code: genCode("TR"),
+   570→   570→          kind: "topup",
+   571→   571→          amount,
+   572→   572→          direction: "in",
+   573→   573→          patientId,
+   574→   574→          status: "success",
+   575→   575→          description: discountCode ? `شارژ کیف پول (کد تخفیف ${discountCode})` : "شارژ کیف پول",
+   576→   576→          createdAtISO: nowISODateTime(),
+   577→   577→        };
+   578→   578→        set((s) => ({
+   579→   579→          transactions: [transaction, ...s.transactions],
+   580→   580→          patients: s.patients.map((p) => (p.id === patientId ? { ...p, walletBalance: p.walletBalance + amount } : p)),
+   581→   581→        }));
+   582→   582→        if (patient) {
+   583→   583→          get().pushNotification({
+   584→   584→            role: "patient",
+   585→   585→            userId: patientId,
+   586→   586→            title: "کیف پول شارژ شد",
+   587→   587→            body: `مبلغ ${amount.toLocaleString("fa-IR")} تومان به کیف پول شما اضافه شد.`,
+   588→   588→            link: "/patient/wallet",
+   589→   589→          });
+   590→   590→        }
+   591→   591→      },
+   592→   592→
+   593→   593→      /* ----------------------------- settlements ----------------------------- */
+   594→   594→      requestSettlement: (input) => {
+   595→   595→        const settlement: Settlement = {
+   596→   596→          id: genId("stl"),
+   597→   597→          code: genCode("ST"),
+   598→   598→          ...input,
+   599→   599→          status: "pending",
+   600→   600→          requestedAtISO: nowISODateTime(),
+   601→   601→        };
+   602→   602→        set((s) => ({ settlements: [settlement, ...s.settlements] }));
+   603→   603→        const doctor = get().doctors.find((d) => d.id === input.doctorId);
+   604→   604→        get().pushNotification({
+   605→   605→          role: "admin",
+   606→   606→          title: "درخواست تسویه جدید",
+   607→   607→          body: `${doctor?.name} درخواست تسویه حساب ثبت کرد.`,
+   608→   608→          link: "/admin/finance",
+   609→   609→        });
+   610→   610→        return settlement;
+   611→   611→      },
+   612→   612→
+   613→   613→      updateSettlement: (id, patch, actorName) => {
+   614→   614→        set((s) => ({
+   615→   615→          settlements: s.settlements.map((st) => (st.id === id ? { ...st, ...patch } : st)),
+   616→   616→        }));
+   617→   617→        const settlement = get().settlements.find((st) => st.id === id);
+   618→   618→        if (!settlement) return;
+   619→   619→        if (patch.status === "paid" && !settlement.paidAtISO) {
+   620→   620→          const transaction: Transaction = {
+   621→   621→            id: genId("trx"),
+   622→   622→            code: genCode("TR"),
+   623→   623→            kind: "settlement",
+   624→   624→            amount: settlement.amount,
+   625→   625→            direction: "out",
+   626→   626→            doctorId: settlement.doctorId,
+   627→   627→            settlementId: settlement.id,
+   628→   628→            status: "success",
+   629→   629→            description: `تسویه حساب ${settlement.code}`,
+   630→   630→            createdAtISO: nowISODateTime(),
+   631→   631→          };
+   632→   632→          set((s) => ({ transactions: [transaction, ...s.transactions] }));
+   633→   633→          get().pushNotification({
+   634→   634→            role: "doctor",
+   635→   635→            userId: settlement.doctorId,
+   636→   636→            title: "تسویه حساب پرداخت شد",
+   637→   637→            body: `مبلغ تسویه ${settlement.code} به حساب شما واریز شد.`,
+   638→   638→            link: "/doctor/finance",
+   639→   639→          });
+   640→   640→        }
+   641→   641→        if (actorName) {
+   642→   642→          get().addAuditLog({
+   643→   643→            actorName,
+   644→   644→            actorRole: "admin",
+   645→   645→            action: patch.status === "paid" ? "پرداخت درخواست تسویه" : patch.status === "rejected" ? "رد درخواست تسویه" : "تأیید درخواست تسویه",
+   646→   646→            target: `درخواست تسویه ${settlement.code}`,
+   647→   647→          });
+   648→   648→        }
+   649→   649→      },
+   650→   650→
+   651→   651→      /* ------------------------------- tickets ------------------------------- */
+   652→   652→      createTicket: (input) => {
+   653→   653→        const createdAtISO = nowISODateTime();
+   654→   654→        const ticket: Ticket = {
+   655→   655→          id: genId("tkt"),
+   656→   656→          code: genCode("TK"),
+   657→   657→          subject: input.subject,
+   658→   658→          creatorId: input.creatorId,
+   659→   659→          creatorRole: input.creatorRole,
+   660→   660→          creatorName: input.creatorName,
+   661→   661→          category: input.category,
+   662→   662→          priority: input.priority,
+   663→   663→          status: "open",
+   664→   664→          messages: [
+   665→   665→            {
+   666→   666→              id: genId("tmsg"),
+   667→   667→              senderId: input.creatorId,
+   668→   668→              senderRole: input.creatorRole,
+   669→   669→              senderName: input.creatorName,
+   670→   670→              text: input.body,
+   671→   671→              internal: false,
+   672→   672→              attachments: [],
+   673→   673→              sentAtISO: createdAtISO,
+   674→   674→            },
+   675→   675→          ],
+   676→   676→          relatedEntityType: input.relatedEntity?.[0],
+   677→   677→          relatedEntityId: input.relatedEntity?.[1],
+   678→   678→          createdAtISO,
+   679→   679→          updatedAtISO: createdAtISO,
+   680→   680→        };
+   681→   681→        set((s) => ({ tickets: [ticket, ...s.tickets] }));
+   682→   682→        get().pushNotification({
+   683→   683→          role: "support",
+   684→   684→          title: "تیکت جدید",
+   685→   685→          body: `تیکت «${input.subject}» ثبت شد.`,
+   686→   686→          link: "/support/tickets",
+   687→   687→        });
+   688→   688→        return ticket;
+   689→   689→      },
+   690→   690→
+   691→   691→      addTicketMessage: (ticketId, msg) => {
+   692→   692→        const full: TicketMessage = {
+   693→   693→          id: genId("tmsg"),
+   694→   694→          senderId: msg.senderId,
+   695→   695→          senderRole: msg.senderRole,
+   696→   696→          senderName: msg.senderName,
+   697→   697→          text: msg.text,
+   698→   698→          internal: msg.internal ?? false,
+   699→   699→          attachments: msg.attachments ?? [],
+   700→   700→          sentAtISO: nowISODateTime(),
+   701→   701→        };
+   702→   702→        set((s) => ({
+   703→   703→          tickets: s.tickets.map((t) => {
+   704→   704→            if (t.id !== ticketId) return t;
+   705→   705→            let status = t.status;
+   706→   706→            if (!full.internal) {
+   707→   707→              if (msg.senderRole === "support" || msg.senderRole === "admin") {
+   708→   708→                status = "answered";
+   709→   709→                if (t.status === "closed") status = "in-progress";
+   710→   710→              } else if (t.creatorRole === msg.senderRole) {
+   711→   711→                status = t.status === "closed" ? "closed" : "in-progress";
+   712→   712→              }
+   713→   713→            }
+   714→   714→            return {
+   715→   715→              ...t,
+   716→   716→              messages: [...t.messages, full],
+   717→   717→              status,
+   718→   718→              updatedAtISO: full.sentAtISO,
+   719→   719→              firstResponseAtISO:
+   720→   720→                !t.firstResponseAtISO && (msg.senderRole === "support" || msg.senderRole === "admin")
+   721→   721→                  ? full.sentAtISO
+   722→   722→                  : t.firstResponseAtISO,
+   723→   723→            };
+   724→   724→          }),
+   725→   725→        }));
+   726→   726→        const ticket = get().tickets.find((t) => t.id === ticketId);
+   727→   727→        if (ticket && (msg.senderRole === "support" || msg.senderRole === "admin") && !full.internal) {
+   728→   728→          get().pushNotification({
+   729→   729→            role: ticket.creatorRole,
+   730→   730→            userId: ticket.creatorId,
+   731→   731→            title: "پاسخ پشتیبانی",
+   732→   732→            body: `به تیکت «${ticket.subject}» پاسخ جدیدی داده شد.`,
+   733→   733→            link: ticket.creatorRole === "patient" ? "/patient/support" : "/doctor/support",
+   734→   734→          });
+   735→   735→        } else if (ticket && ticket.assignedAgentId && (msg.senderRole === "patient" || msg.senderRole === "doctor")) {
+   736→   736→          get().pushNotification({
+   737→   737→            role: "support",
+   738→   738→            userId: ticket.assignedAgentId,
+   739→   739→            title: "پاسخ کاربر در تیکت",
+   740→   740→            body: `${ticket.creatorName} به تیکت «${ticket.subject}» پاسخ داد.`,
+   741→   741→            link: "/support/tickets",
+   742→   742→          });
+   743→   743→        }
+   744→   744→      },
+   745→   745→
+   746→   746→      updateTicket: (id, patch) =>
+   747→   747→        set((s) => ({ tickets: s.tickets.map((t) => (t.id === id ? { ...t, ...patch, updatedAtISO: nowISODateTime() } : t)) })),
+   748→   748→
+   749→   749→      closeTicket: (id, actorName) => {
+   750→   750→        set((s) => ({
+   751→   751→          tickets: s.tickets.map((t) => (t.id === id ? { ...t, status: "closed", resolvedAtISO: nowISODateTime(), updatedAtISO: nowISODateTime() } : t)),
+   752→   752→        }));
+   753→   753→        const ticket = get().tickets.find((t) => t.id === id);
+   754→   754→        if (ticket) {
+   755→   755→          get().pushNotification({
+   756→   756→            role: ticket.creatorRole,
+   757→   757→            userId: ticket.creatorId,
+   758→   758→            title: "تیکت بسته شد",
+   759→   759→            body: `تیکت «${ticket.subject}» بسته شد. اگر مشکل داران ادامه دارد، تیکت جدیدی ثبت کنید.`,
+
+[showing lines 60-759 of 929; use offset=760 with limit to continue reading]
