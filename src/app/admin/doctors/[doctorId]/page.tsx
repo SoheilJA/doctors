@@ -1,9 +1,13 @@
-"use client";
+import { buildSeed } from "@/mock/seed";
+import { AdminDoctorDetailContent } from "./AdminDoctorDetailContent";
 
-import { useParams } from "next/navigation";
-import { AdminDoctorDetail } from "@/features/admin/doctors/detail";
+export async function generateStaticParams() {
+  const seed = buildSeed();
+  return seed.doctors.map((doctor) => ({
+    doctorId: doctor.id,
+  }));
+}
 
-export default function AdminDoctorDetailPage() {
-  const params = useParams<{ doctorId: string }>();
-  return <AdminDoctorDetail doctorId={params.doctorId} />;
+export default function Page() {
+  return <AdminDoctorDetailContent />;
 }
